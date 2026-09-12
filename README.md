@@ -1,0 +1,227 @@
+# Subscription Churn: From Prediction to Retention Economics
+
+Churn models usually stop at AUC. This project goes one step further: who
+should actually get a retention call, and at what point does that call stop
+paying for itself.
+
+Dataset: [KKBox Churn Prediction Challenge](https://www.kaggle.com/competitions/kkbox-churn-prediction-challenge)
+(WSDM 2018 Kaggle competition) — member profiles, subscription transactions,
+and daily listening activity for a real music-streaming service. Chosen over
+a synthetic dataset so the eval protocol is comparable to a known public
+benchmark, not invented.
+
+## Problem statement
+
+Given a member's subscription and activity history up to a cutoff date,
+predict whether they'll churn (fail to renew within 30 days of their
+subscription expiring), and turn that prediction into a concrete answer to
+a business question: which members should a retention campaign contact, and
+at what campaign conversion rate does contacting them stop being profitable.
+
+## Data
+
+- `members_v3.csv` (6.77M rows) — demographics: city, age (`bd`, noisy —
+  clipped to `[10, 80]` in EDA), gender (65% missing — not everyone filled
+  it in), registration channel, registration date.
+- `transactions.csv` + `transactions_v2.csv` (22.98M rows merged,
+  2015-01-01 to 2017-03-31) — payment method, plan price, auto-renew flag,
+  transaction date, membership expiry date, cancellation flag.
+  `transactions.csv` alone ends exactly on 2017-02-28; the `_v2` extension
+  (through 2017-03-31) is required to correctly label the Feb-28 cutoff,
+  since that label needs to look 30 days into the future.
+- `user_logs.csv` + `user_logs_v2.csv` (392M+ rows, ~30GB raw) — daily
+  listening activity: play counts by completion bucket, unique tracks,
+  total seconds played.
+
+**Scale decisions:**
+- All three raw CSVs were converted once to Parquet via DuckDB (30GB → 10GB,
+  columnar, re-read three times for the three cutoffs below without
+  re-parsing text each time). The dataset's `YYYYMMDD`-integer date columns
+  (`registration_init_time`, `transaction_date`, `membership_expire_date`,
+  `date`) are cast to real `DATE`s during that conversion.
+- The full candidate population per cutoff (~820k-840k members, see below)
+  is stratified-sampled down to 300k rows total across the three folds, to
+  keep the notebook re-runnable in well under an hour. Sampling is
+  stratified on "has any listening activity in the 30 days before cutoff"
+  so the sample doesn't skew toward inactive members; seed=42 for
+  reproducibility.
+
+## Label definition and temporal cutoffs
+
+A member is **churned** if, for a subscription active going into the
+cutoff, no transaction extends `membership_expire_date` to within 30 days
+of that subscription's expiry. This matches KKBox's own reference labeller
+(`data/raw/WSDMChurnLabeller.scala`, shipped with the competition data) —
+notably, the "renewal gap" there is *often negative*: auto-renewal charges
+routinely land on or before the old expiry date, not after it. An earlier
+version of `derive_churn_labels` required the renewal transaction to be
+dated strictly after the old expiry and, against real data, misclassified
+80-99% of members as churned. Fixed in `src/labels.py` — see its docstring
+and the regression test in `tests/test_labels.py`.
+
+**Candidate scoping:** a member only has a churn/retain decision to make
+around a given cutoff if their subscription is actually coming up for
+renewal then. Restricting each cutoff's population to members whose
+subscription expiry falls in `[cutoff, cutoff + 28 days)` reproduces
+Kaggle's own `train.csv` population closely: ~956k candidates at ~7.7%
+churn (this project's exact window) vs. `train.csv`'s 993k at 6.4%, with
+95% label agreement on the overlapping members. Without this filter the
+population includes every member with any transaction history — most of
+them mid-subscription with nothing to decide yet — which inflates apparent
+churn to ~50%.
+
+**Three monthly cutoffs**, used as non-overlapping temporal train/val/test
+folds (not a random split, which would leak future renewal/activity
+patterns backward into training):
+
+| Fold | Cutoff | Candidates | Churn rate |
+|---|---|---|---|
+| Train | 2016-12-31 | 820,637 | 3.99% |
+| Validation | 2017-01-31 | 841,374 | 3.58% |
+| Test | 2017-02-28 | 837,245 | 4.08% |
+
+(For reference: Kaggle's own `train.csv`, a similar Jan-2017-cutoff
+population defined slightly differently, reports 992,931 members at 6.39%
+churn — this project's numbers are in the same ballpark; the gap is
+attributable to the exact candidate-window and lookback choices above,
+called out here rather than tuned away.)
+
+## SQL feature mart
+
+`sql/feature_mart.sql` (DuckDB, parameterized by cutoff date) computes, per
+member: tenure, current subscription state (auto-renew, payment method,
+plan price, discount flag), 90-day transaction/cancellation counts via
+window functions over `transactions`, and 30-day activity aggregates
+(active days, total seconds played, and a 30-vs-prior-30-day activity trend
+ratio) via window functions over `user_logs`. Every subquery filters
+strictly before its cutoff — no feature ever sees data on/after its own
+cutoff. `src/feature_mart.py` runs it; `tests/test_feature_mart.py` pins
+the exact window-function arithmetic against a hand-computed fixture.
+Demographic columns (city, age, gender, registration channel) are joined in
+separately in the notebook.
+
+## Cohort retention and survival analysis
+
+Monthly signup cohorts show the expected shape: steep drop-off in the first
+few months, then a long, slowly-decaying tail for members who stick around
+(`data/processed/fig_cohort_retention.png`).
+
+Kaplan-Meier survival curves (`lifelines`), segmented by auto-renew status
+and registration channel, show materially different survival profiles —
+confirmed with log-rank tests (auto-renew: p≈0; registration channel: p=6e-36).
+See `data/processed/fig_survival_curves.png`.
+
+## Hypothesis testing
+
+Three tests on the test-fold population (auto-renew vs. churn: two-proportion
+z-test; registration channel vs. churn and plan-price-tercile vs. churn:
+chi-square independence), with Benjamini-Hochberg FDR correction applied
+across the family (`src/hypothesis_tests.py`, `statsmodels`). All three
+remain significant after correction — at a 300k-row sample size, p-values
+underflow to 0.0 for effects this large.
+
+## Model and temporal validation
+
+LightGBM (`scale_pos_weight` set to the train-fold imbalance ratio, not
+resampling), early-stopped on the validation fold, evaluated once on the
+untouched test fold:
+
+- **PR-AUC: 0.339** (primary metric — the positive class is ~4% of the
+  population, so PR-AUC is the honest number; ROC-AUC alone overstates
+  performance at this base rate)
+- **ROC-AUC: 0.890** (reported as the more familiar secondary number)
+
+See `data/processed/fig_pr_roc.png`.
+
+## Calibration
+
+Raw LightGBM probabilities feed directly into the dollar formula below, so
+they need to be genuinely calibrated, not just rank-ordered. Isotonic
+regression (via `sklearn`'s `FrozenEstimator`, fit on the validation fold)
+cuts the test-fold **Brier score from 0.0359 to 0.0309**. Reliability
+diagram: `data/processed/fig_calibration.png`.
+
+## SHAP interpretation
+
+`data/processed/fig_shap_summary.png`. Top features by mean |SHAP|:
+`is_auto_renew`, `payment_method_id`, `num_transactions_last_90d`,
+`active_days_last_30`, `tenure_days` — auto-renew status and recent
+transaction/engagement behavior dominate; demographics barely register.
+Matches the intuition that churn is a behavioral signal, not a
+who-you-are signal.
+
+## Economics: expected value and breakeven conversion rate
+
+`src/economics.py` turns a calibrated churn probability into a dollar
+decision: `ev_per_contact = p_churn * conversion_rate * (arpu *
+avg_lifetime_months) - contact_cost`, summed over whichever top-k% of the
+scored base gets contacted. Sweeping contact volume against the test
+fold's calibrated probabilities (assuming ARPU=$4.99, average lifetime=21
+months, contact cost=$3, and a 15% campaign conversion rate as a
+planning assumption):
+
+- **Best contact volume: top 7%** of the scored base
+- **Expected profit at that volume: ~$13,800** (at the 15% assumed
+  conversion rate)
+- **Breakeven conversion rate at that volume: 9.1%** — below this,
+  contacting that many people loses money regardless of how good the churn
+  model's ranking is. This is the number to hand a stakeholder, not AUC.
+
+See `data/processed/fig_campaign_economics.png`.
+
+## Dashboard
+
+`dashboard/app.py` (Streamlit) — four pages: Overview, Survival &
+hypothesis tests, Model performance, and a live **Campaign economics**
+page where ARPU/lifetime/contact-cost/conversion-rate are sliders and the
+expected-profit and breakeven-conversion-rate numbers recompute instantly
+via the same `src/economics.py` functions used in the notebook (no
+duplicated logic between the two).
+
+```bash
+uv run streamlit run dashboard/app.py
+```
+
+## How to reproduce
+
+```bash
+uv sync
+./scripts/download_data.sh          # needs `kaggle` CLI credentials + accepted competition rules
+# one-time raw CSV -> Parquet conversion with date casting (see scripts/build_pipeline.py
+# for the exact DuckDB COPY statements, or scripts/make_notebook.py + nbconvert below)
+uv run python scripts/make_notebook.py
+PYTHONPATH=. uv run jupyter nbconvert --to notebook --execute \
+  --ExecutePreprocessor.timeout=540 churn_retention_analysis.ipynb \
+  --output churn_retention_analysis.ipynb
+uv run streamlit run dashboard/app.py
+```
+
+`scripts/build_pipeline.py` is a non-interactive equivalent of the notebook
+(same `src/` calls, no plots) — useful for quick end-to-end reruns while
+iterating; the notebook is the primary, documented artifact.
+
+Run the test suite (fast — no data download needed for most of it):
+
+```bash
+uv run pytest
+```
+
+Three tests are skipped without the raw/processed data present (raw schema
+smoke test, scored-artifact test, dashboard smoke test) and pass once the
+pipeline above has been run.
+
+## Limitations
+
+- The 300k-row sample (from a ~2.5M-row combined candidate population) is a
+  runtime tradeoff, disclosed above, not a modeling choice — a full run
+  would use the entire population.
+- The campaign `conversion_rate` (15% in the notebook, adjustable in the
+  dashboard) is an **assumed planning input, not a measured one** — pinning
+  it down for real would need an actual A/B test of the retention campaign.
+  The breakeven-conversion-rate number sidesteps needing to know it exactly:
+  it tells you the threshold the real, measured conversion rate needs to
+  clear.
+- This project's churn rate (~4%) runs somewhat below Kaggle's own
+  `train.csv` (6.4%) for a comparable population — attributable to this
+  project's exact candidate-window and lookback choices (documented above),
+  not tuned to match.

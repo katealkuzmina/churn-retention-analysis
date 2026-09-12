@@ -1,0 +1,32 @@
+[project]
+name = "churn-retention-kkbox"
+version = "0.1.0"
+description = "SaaS churn prediction and retention economics on the KKBox dataset"
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb>=1.0",
+    "pandas>=2.2",
+    "lightgbm>=4.5",
+    "lifelines>=0.29",
+    "shap>=0.46",
+    "scipy>=1.13",
+    "statsmodels>=0.14",
+    "streamlit>=1.38",
+    "plotly>=5.24",
+    "matplotlib>=3.9",
+    "scikit-learn>=1.5",
+    "pyarrow>=17.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.6",
+    "jupyter>=1.1",
+    "nbformat>=5.10",
+    "nbconvert>=7.16",
+    "ipykernel>=6.29",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
