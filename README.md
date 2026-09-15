@@ -271,8 +271,7 @@ uv run streamlit run dashboard/app.py
 ```bash
 uv sync
 ./scripts/download_data.sh          # needs `kaggle` CLI credentials + accepted competition rules
-# one-time raw CSV -> Parquet conversion with date casting (see scripts/build_pipeline.py
-# for the exact DuckDB COPY statements, or scripts/make_notebook.py + nbconvert below)
+uv run python scripts/convert_to_parquet.py   # one-time raw CSV -> Parquet conversion with date casting
 uv run python scripts/make_notebook.py
 PYTHONPATH=. uv run jupyter nbconvert --to notebook --execute \
   --ExecutePreprocessor.timeout=540 churn_retention_analysis.ipynb \
