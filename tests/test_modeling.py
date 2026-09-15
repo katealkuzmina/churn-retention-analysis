@@ -7,6 +7,7 @@ from src.modeling import (
     calibrate_isotonic,
     evaluate,
     train_lightgbm,
+    train_logistic_baseline,
 )
 
 
@@ -57,3 +58,19 @@ def test_train_lightgbm_early_stops_on_average_precision_not_logloss():
     # Unfixed: 26 (gated on logloss), Fixed: 36 (gated on AP).
     # Threshold of 30 ensures test fails on buggy code and passes on fixed.
     assert model.best_iteration_ > 30
+
+
+def test_train_logistic_baseline_returns_fitted_pipeline_usable_by_evaluate():
+    rng = np.random.default_rng(1)
+    n = 500
+    df = pd.DataFrame({
+        "f0": rng.normal(size=n),
+        "f1": rng.normal(size=n),
+    })
+    df["is_churn"] = (df["f0"] + rng.normal(scale=0.5, size=n) > 0.5).astype(int)
+
+    baseline = train_logistic_baseline(df, feature_columns=["f0", "f1"])
+    metrics = evaluate(baseline, df, feature_columns=["f0", "f1"])
+
+    assert 0.0 <= metrics["pr_auc"] <= 1.0
+    assert 0.0 <= metrics["roc_auc"] <= 1.0

@@ -4,7 +4,11 @@ import lightgbm as lgb
 import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.frozen import FrozenEstimator
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 FEATURE_COLUMNS = [
     "tenure_days", "is_auto_renew", "payment_method_id", "plan_list_price",
@@ -43,6 +47,24 @@ def train_lightgbm(
         callbacks=[lgb.early_stopping(stopping_rounds=30, first_metric_only=True, verbose=False)],
     )
     return model
+
+
+def train_logistic_baseline(
+    train_df: pd.DataFrame,
+    feature_columns: list[str] = FEATURE_COLUMNS,
+    label_col: str = "is_churn",
+) -> Pipeline:
+    """Plain logistic-regression baseline on the same features as
+    train_lightgbm, for comparison -- a churn model's PR-AUC only means
+    something relative to how far it beats this.
+    """
+    pipeline = Pipeline([
+        ("impute", SimpleImputer(strategy="median")),
+        ("scale", StandardScaler()),
+        ("logreg", LogisticRegression(max_iter=1000, class_weight="balanced")),
+    ])
+    pipeline.fit(train_df[feature_columns], train_df[label_col])
+    return pipeline
 
 
 def evaluate(
