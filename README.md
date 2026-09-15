@@ -74,11 +74,13 @@ churn to ~50%.
 folds (not a random split, which would leak future renewal/activity
 patterns backward into training):
 
+Cutoffs are one month earlier than an initial draft used (which had the test fold's 30-day churn horizon running past 2017-03-31, the last date the data covers — see the regression test in `tests/test_candidates.py`).
+
 | Fold | Cutoff | Candidates | Churn rate |
 |---|---|---|---|
-| Train | 2016-12-31 | 820,637 | 3.99% |
-| Validation | 2017-01-31 | 841,374 | 3.58% |
-| Test | 2017-02-28 | 837,245 | 4.08% |
+| Train | 2016-11-30 | TBD-after-Task-6-rerun | TBD |
+| Validation | 2016-12-31 | TBD-after-Task-6-rerun | TBD |
+| Test | 2017-01-31 | TBD-after-Task-6-rerun | TBD |
 
 (For reference: Kaggle's own `train.csv`, a similar Jan-2017-cutoff
 population defined slightly differently, reports 992,931 members at 6.39%

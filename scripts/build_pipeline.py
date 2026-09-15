@@ -35,9 +35,9 @@ from src.shap_utils import compute_shap_values
 from src.survival import logrank_pvalue
 
 CUTOFFS = {
-    "train": "2016-12-31",
-    "val": "2017-01-31",
-    "test": "2017-02-28",
+    "train": "2016-11-30",
+    "val": "2016-12-31",
+    "test": "2017-01-31",
 }
 
 
