@@ -82,7 +82,7 @@ def main() -> None:
         # churn vs. train.csv's 993k at 6.4%, 95% label agreement on the
         # overlap).
         labels = scope_to_renewal_candidates(labels, pd.Timestamp(cutoff), window_days=28)
-        merged = mart.merge(labels[["msno", "is_churn"]], on="msno", how="inner")
+        merged = mart.merge(labels[["msno", "is_churn", "expire_at_cutoff"]], on="msno", how="inner")
         merged["fold"] = fold_name
         folds.append(merged)
         log(f"  {fold_name} ({cutoff}): {len(merged):,} rows in {time.time()-t0:.1f}s, "
@@ -124,8 +124,10 @@ def main() -> None:
     test_fold = sample[sample["fold"] == "test"].merge(
         members_df[["msno", "registration_init_time"]], on="msno", how="left"
     )
+    # Duration is time-to-event, tied to the same renewal decision
+    # is_churn describes -- not an unrelated calendar-tenure snapshot.
     test_fold["duration_days"] = (
-        pd.Timestamp(CUTOFFS["test"]) - test_fold["registration_init_time"]
+        test_fold["expire_at_cutoff"] - test_fold["registration_init_time"]
     ).dt.days
     survival_results = {}
     for segment_col in ["is_auto_renew", "registered_via"]:

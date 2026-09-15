@@ -109,8 +109,13 @@ few months, then a long, slowly-decaying tail for members who stick around
 (`data/processed/fig_cohort_retention.png`).
 
 Kaplan-Meier survival curves (`lifelines`), segmented by auto-renew status
-and registration channel, show materially different survival profiles —
-confirmed with log-rank tests (auto-renew: p≈0; registration channel: p=8.221e-19).
+and registration channel. Duration is time from registration to the renewal
+decision at the test cutoff (`expire_at_cutoff - registration_init_time`);
+event is whether that renewal decision ended in churn (`is_churn`) — this
+ties duration to the same renewal decision the event describes, rather than
+an unrelated calendar-tenure snapshot as of a fixed date. Segments show
+materially different survival profiles, confirmed with log-rank tests
+(auto-renew: p≈0; registration channel: p=8.124e-19).
 See `data/processed/fig_survival_curves.png`.
 
 ## Hypothesis testing
