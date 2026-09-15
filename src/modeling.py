@@ -40,7 +40,7 @@ def train_lightgbm(
         train_df[feature_columns], train_df[label_col],
         eval_set=[(val_df[feature_columns], val_df[label_col])],
         eval_metric="average_precision",
-        callbacks=[lgb.early_stopping(stopping_rounds=30, verbose=False)],
+        callbacks=[lgb.early_stopping(stopping_rounds=30, first_metric_only=True, verbose=False)],
     )
     return model
 
