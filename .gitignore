@@ -1,6 +1,7 @@
 data/raw/*
 !data/raw/.gitkeep
 data/interim/
+docs/
 .venv/
 __pycache__/
 *.pyc
