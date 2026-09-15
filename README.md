@@ -35,8 +35,12 @@ regardless of this repo's license.
   2015-01-01 to 2017-03-31) — payment method, plan price, auto-renew flag,
   transaction date, membership expiry date, cancellation flag.
   `transactions.csv` alone ends exactly on 2017-02-28; the `_v2` extension
-  (through 2017-03-31) is required to correctly label the Feb-28 cutoff,
-  since that label needs to look 30 days into the future.
+  (through 2017-03-31) is required because the test fold's cutoff
+  (2017-01-31) has candidates with `expire_at_cutoff` through 2017-02-27,
+  and correctly labelling those needs transaction data through the 30-day
+  churn-observation horizon -- i.e. through 2017-03-29 -- which
+  `transactions.csv` alone falls short of; `_v2` covers that plus a small
+  margin.
 - `user_logs.csv` + `user_logs_v2.csv` (392M+ rows, ~30GB raw) — daily
   listening activity: play counts by completion bucket, unique tracks,
   total seconds played.
@@ -71,9 +75,12 @@ and the regression test in `tests/test_labels.py`.
 around a given cutoff if their subscription is actually coming up for
 renewal then. Restricting each cutoff's population to members whose
 subscription expiry falls in `[cutoff, cutoff + 28 days)` reproduces
-Kaggle's own `train.csv` population closely: ~956k candidates at ~7.7%
-churn (this project's exact window) vs. `train.csv`'s 993k at 6.4%, with
-95% label agreement on the overlapping members. Without this filter the
+Kaggle's own `train.csv` candidate count closely -- within ~4%
+(this project's train-fold window: ~956k candidates vs. `train.csv`'s
+993k), with 95% label agreement on the overlapping members. Churn rates,
+however, vary by fold (train: ~7.7%, test: ~3.5%) and, on the fold
+actually comparable to `train.csv`'s Jan-2017 cutoff, run well below
+Kaggle's aggregate 6.4% -- see Limitations. Without this filter the
 population includes every member with any transaction history — most of
 them mid-subscription with nothing to decide yet — which inflates apparent
 churn to ~50%.
@@ -92,7 +99,9 @@ Cutoffs are one month earlier than an initial draft used (which had the test fol
 
 (For reference: Kaggle's own `train.csv`, a similar Jan-2017-cutoff
 population defined slightly differently, reports 992,931 members at 6.39%
-churn — this project's numbers are in the same ballpark; the gap is
+churn. Candidate counts land in the same ballpark across this project's
+folds; churn rates do not -- the test fold's 3.656% is the genuinely
+comparable number here, and it's well below `train.csv`'s 6.39%,
 attributable to the exact candidate-window and lookback choices above,
 called out here rather than tuned away.)
 
@@ -133,7 +142,13 @@ population (not every KKBox registrant ever — using the raw 6.77M-row
 retention read ~12%). Month-0 retention for cohorts registered *within* the
 transactions data's coverage window (2015-01 through 2017-03) is
 near-universal: mean 80.5%, range 60.0–100.0% across the 26 such cohorts
-(`data/processed/cohort_retention.parquet`, column `0`).
+(`data/processed/cohort_retention.parquet`, column `0`). That ~80.5%
+(not ~100%) reflects `active_periods` being built from transaction-months
+rather than a full subscription-span expansion, so a member who doesn't
+transact again immediately in their signup month reads as not-yet-retained
+even if their subscription was still nominally active -- a defensible
+activity proxy, not a literal subscription-span calculation (see
+`src/cohorts.py`'s `build_cohort_retention` docstring).
 
 Cohorts registered before 2015-01 — about 56% of the candidate population by
 registration date — show gaps (`NaN`), not zero retention, in their early
@@ -286,6 +301,11 @@ expected-profit and breakeven-conversion-rate numbers recompute instantly
 via the same `src/economics.py` functions used in the notebook (no
 duplicated logic between the two).
 
+The dashboard reads its PNGs and parquet files from `data/processed/`,
+which is gitignored (see "How to reproduce" below) -- run the pipeline
+once (notebook or `scripts/build_pipeline.py`) before launching it on a
+fresh clone, or it has nothing to display.
+
 ```bash
 uv run streamlit run dashboard/app.py
 ```
@@ -296,12 +316,19 @@ uv run streamlit run dashboard/app.py
 uv sync
 ./scripts/download_data.sh          # needs `kaggle` CLI credentials + accepted competition rules
 uv run python scripts/convert_to_parquet.py   # one-time raw CSV -> Parquet conversion with date casting
-uv run python scripts/make_notebook.py
 PYTHONPATH=. uv run jupyter nbconvert --to notebook --execute \
   --ExecutePreprocessor.timeout=540 churn_retention_analysis.ipynb \
   --output churn_retention_analysis.ipynb
 uv run streamlit run dashboard/app.py
 ```
+
+`churn_retention_analysis.ipynb` is committed pre-executed, already
+reflecting all 15 remediation tasks -- re-running it in place via
+`nbconvert --execute` (as above) is how you reproduce it. Do **not** run
+`scripts/make_notebook.py` to regenerate it from scratch: that generator
+predates most of the remediation work and would overwrite the current
+notebook with a stale, broken version (see the warning comment at the top
+of that script).
 
 `scripts/build_pipeline.py` is a non-interactive equivalent of the notebook
 (same `src/` calls, no plots) — useful for quick end-to-end reruns while
@@ -313,10 +340,13 @@ Run the test suite (fast — no data download needed for most of it):
 uv run pytest
 ```
 
-One test (`tests/test_data_smoke.py`) is skipped on a truly fresh clone, before
-`scripts/download_data.sh` has put the raw CSVs in place -- it passes once they're there.
-`data/processed/scored_feature_mart.parquet` is committed to the repo, so the dashboard-smoke
-tests run (and pass) even on a fresh clone without a full pipeline re-run.
+On a truly fresh clone, six tests are skipped: one (`tests/test_data_smoke.py`) skips
+before `scripts/download_data.sh` has put the raw CSVs in place -- it passes once they're
+there. The other five (`tests/test_dashboard_smoke.py`) skip because `data/processed/`
+is gitignored (Task 14 stopped tracking derived data -- see `.gitignore`), so
+`data/processed/scored_feature_mart.parquet` doesn't exist yet on a fresh clone; they
+pass once a full pipeline run (`nbconvert --execute` or `scripts/build_pipeline.py`) has
+populated `data/processed/`.
 
 ## Limitations
 

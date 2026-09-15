@@ -17,7 +17,13 @@ def build_cohort_retention(
     retention reads far below 100%.
 
     active_periods: columns [msno, period] -- one row per (msno, month)
-    the member held an active subscription.
+    the member transacted in (a proxy for activity, e.g. a
+    transaction-months table such as `tx_all[["msno", "month"]]
+    .drop_duplicates()`), NOT an expansion of every month a subscription
+    was nominally active between a transaction and its
+    `membership_expire_date`. A member who doesn't transact again in the
+    month right after signup reads as "not retained" that month even if
+    their subscription was still technically active.
 
     max_observable_month: callable, cohort_month (a pandas Period) ->
     int, the last months_since_signup value the data can actually speak

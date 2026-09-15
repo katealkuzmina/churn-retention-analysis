@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import gc
 import time
+from pathlib import Path
 
 import duckdb
 import numpy as np
@@ -51,6 +52,12 @@ def log(msg: str) -> None:
 
 
 def connect() -> duckdb.DuckDBPyConnection:
+    # data/interim/ is gitignored (only .gitkeep tracked); DuckDB's
+    # temp_directory setting does not create missing directories itself
+    # (verified empirically -- SET alone, and a forced spill, both leave a
+    # missing leaf dir uncreated / erroring), so create it defensively.
+    Path("data/interim/duckdb_tmp").mkdir(parents=True, exist_ok=True)
+
     con = duckdb.connect()
     con.execute('SET memory_limit="4GB"')
     con.execute("SET threads TO 4")
@@ -80,11 +87,12 @@ def main() -> None:
         # coming up for renewal shortly after cutoff are "at risk" this
         # period. Without this, the population includes everyone with any
         # transaction history (many mid-subscription, nothing to decide
-        # yet), which inflates churn to ~50% instead of the ~6% KKBox's
-        # own train.csv reports for the equivalent Jan-cutoff population
-        # (validated: this filter reproduces ~956k candidates at ~7.7%
-        # churn vs. train.csv's 993k at 6.4%, 95% label agreement on the
-        # overlap).
+        # yet), which inflates churn to ~50%.
+        # Candidate counts land within ~4% of KKBox's own train.csv
+        # population (~956k here vs. train.csv's 993k, 95% label agreement
+        # on the overlap); churn rates vary by fold (train: ~7.7%, test:
+        # ~3.5%) and run below train.csv's aggregate 6.4% -- see README
+        # Limitations.
         labels = scope_to_renewal_candidates(labels, pd.Timestamp(cutoff), window_days=28)
         merged = mart.merge(labels[["msno", "is_churn", "expire_at_cutoff"]], on="msno", how="inner")
         merged["fold"] = fold_name
@@ -180,9 +188,22 @@ def main() -> None:
         p_values.append(p)
         test_labels.append("registered_via_vs_churn")
 
+    price_tercile = pd.qcut(test_fold["plan_list_price"], 3, labels=["low", "mid", "high"], duplicates="drop")
+    price_table = pd.crosstab(price_tercile, test_fold["is_churn"])
+    if price_table.shape[0] > 1:
+        _, p = chi_square_independence(price_table)
+        p_values.append(p)
+        test_labels.append("price_tercile_vs_churn")
+
     reject_flags = correct_pvalues(p_values) if p_values else []
     for label, p, reject in zip(test_labels, p_values, reject_flags):
         log(f"  {label}: p={p:.4g}, significant_after_BH={reject}")
+
+    hypothesis_results = pd.DataFrame(
+        {"test": test_labels, "p_value": p_values, "significant_after_BH": reject_flags}
+    )
+    hypothesis_results.to_parquet("data/processed/hypothesis_test_results.parquet", index=False)
+    log(f"  wrote {len(hypothesis_results)} rows to data/processed/hypothesis_test_results.parquet")
 
     log("temporal train/val/test split + LightGBM")
     train_df = sample[sample["fold"] == "train"]

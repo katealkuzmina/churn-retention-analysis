@@ -5,6 +5,8 @@ notebook both read from data/interim/*.parquet, not the raw CSVs.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import duckdb
 
 RAW = "data/raw"
@@ -12,6 +14,11 @@ INTERIM = "data/interim"
 
 
 def main() -> None:
+    # data/interim/ is gitignored (only .gitkeep is tracked) -- create it
+    # defensively in case it's missing, since DuckDB's COPY TO does not
+    # create parent directories itself.
+    Path(INTERIM).mkdir(parents=True, exist_ok=True)
+
     con = duckdb.connect()
     con.execute('SET memory_limit="4GB"')
 

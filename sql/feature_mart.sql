@@ -1,6 +1,6 @@
 -- One row per msno with a membership on file as of the cutoff date.
 -- Every CTE filters strictly before the cutoff -- no feature may see
--- data on/after its own cutoff (spec Sec 3). Placeholders are positional,
+-- data on/after its own cutoff. Placeholders are positional,
 -- each bound to the same cutoff_date value by src/feature_mart.py.
 
 WITH last_transaction AS (
