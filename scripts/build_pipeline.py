@@ -13,6 +13,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 
+from src.candidates import scope_to_renewal_candidates
 from src.cohorts import build_cohort_retention
 from src.economics import breakeven_conversion_rate, campaign_expected_profit
 from src.feature_mart import build_feature_mart
@@ -79,11 +80,7 @@ def main() -> None:
         # (validated: this filter reproduces ~956k candidates at ~7.7%
         # churn vs. train.csv's 993k at 6.4%, 95% label agreement on the
         # overlap).
-        cutoff_ts = pd.Timestamp(cutoff)
-        labels = labels[
-            (labels["expire_at_cutoff"] >= cutoff_ts)
-            & (labels["expire_at_cutoff"] < cutoff_ts + pd.Timedelta(days=28))
-        ]
+        labels = scope_to_renewal_candidates(labels, pd.Timestamp(cutoff), window_days=28)
         merged = mart.merge(labels[["msno", "is_churn"]], on="msno", how="inner")
         merged["fold"] = fold_name
         folds.append(merged)
