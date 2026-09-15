@@ -54,4 +54,6 @@ def test_train_lightgbm_early_stops_on_average_precision_not_logloss():
 
     # With a real, still-improving-on-AP signal like this, stopping at
     # a handful of trees means logloss (not AP) gated the stop.
-    assert model.best_iteration_ > 10
+    # Unfixed: 26 (gated on logloss), Fixed: 36 (gated on AP).
+    # Threshold of 30 ensures test fails on buggy code and passes on fixed.
+    assert model.best_iteration_ > 30
