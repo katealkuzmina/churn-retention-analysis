@@ -25,8 +25,12 @@ itself is not — it stays under Kaggle's WSDM 2018 competition rules
 regardless of this repo's license.
 
 - `members_v3.csv` (6.77M rows) — demographics: city, age (`bd`, noisy —
-  clipped to `[10, 80]` in EDA), gender (65% missing — not everyone filled
-  it in), registration channel, registration date.
+  values outside `(0, 100]` are set to `bd_cleaned = NULL` and flagged via
+  `bd_missing` rather than clipped into a fake age, since clipping to
+  `[10, 80]` turned every invalid/unset value into a spurious "10 years
+  old" spike; 67.15% of members (4,545,866 of 6,769,473) are `bd_missing`),
+  gender (65% missing — not everyone filled it in), registration channel,
+  registration date.
 - `transactions.csv` + `transactions_v2.csv` (22.98M rows merged,
   2015-01-01 to 2017-03-31) — payment method, plan price, auto-renew flag,
   transaction date, membership expiry date, cancellation flag.
@@ -82,9 +86,9 @@ Cutoffs are one month earlier than an initial draft used (which had the test fol
 
 | Fold | Cutoff | Candidates | Churn rate |
 |---|---|---|---|
-| Train | 2016-11-30 | 839,356 | 7.674% |
-| Validation | 2016-12-31 | 820,637 | 4.082% |
-| Test | 2017-01-31 | 841,374 | 3.721% |
+| Train | 2016-11-30 | 842,708 | 7.644% |
+| Validation | 2016-12-31 | 823,209 | 4.046% |
+| Test | 2017-01-31 | 844,114 | 3.656% |
 
 (For reference: Kaggle's own `train.csv`, a similar Jan-2017-cutoff
 population defined slightly differently, reports 992,931 members at 6.39%
@@ -107,6 +111,20 @@ the exact window-function arithmetic against a hand-computed fixture.
 Demographic columns (city, age, gender, registration channel) are joined in
 separately in the notebook.
 
+`activity_trend_30d` (`total_secs_last_30 / total_secs_prior_30`) is `NULL`
+when the prior-30-day window has under 60 seconds of listening (not enough
+signal to compute a ratio off of — a near-zero denominator used to blow the
+ratio up to absurd values, e.g. 5.9e6, off of a single second of prior
+activity) and is capped at `10.0` (`LEAST(..., 10.0)`) otherwise, so one
+outlier row can't dominate any model that uses this feature. On the actual
+sampled population this caps the max observed ratio at exactly `10.0`
+(previously unbounded) with 16.3% of rows `NULL`.
+
+`payment_method_id` is a plain integer ID with no ordinal meaning (payment
+method 41 isn't "more" than 12) — `train_lightgbm` (`src/modeling.py`)
+passes it to LightGBM via the native `categorical_feature=["payment_method_id"]`
+fit-time parameter rather than feeding it in as an ordered numeric feature.
+
 ## Cohort retention and survival analysis
 
 Monthly signup cohorts, denominator scoped to the renewal-candidate
@@ -114,7 +132,7 @@ population (not every KKBox registrant ever — using the raw 6.77M-row
 `members` table as the denominator was an earlier bug that made month-0
 retention read ~12%). Month-0 retention for cohorts registered *within* the
 transactions data's coverage window (2015-01 through 2017-03) is
-near-universal: mean 80.5%, range 60.1–100.0% across the 26 such cohorts
+near-universal: mean 80.5%, range 60.0–100.0% across the 26 such cohorts
 (`data/processed/cohort_retention.parquet`, column `0`).
 
 Cohorts registered before 2015-01 — about 56% of the candidate population by
@@ -139,7 +157,7 @@ event is whether that renewal decision ended in churn (`is_churn`) — this
 ties duration to the same renewal decision the event describes, rather than
 an unrelated calendar-tenure snapshot as of a fixed date. Segments show
 materially different survival profiles, confirmed with log-rank tests
-(auto-renew: p≈0; registration channel: p=8.124e-19).
+(auto-renew: p≈0; registration channel: p=3.606e-19).
 See `data/processed/fig_survival_curves.png`.
 
 ## Hypothesis testing
@@ -157,15 +175,15 @@ LightGBM (`scale_pos_weight` set to the train-fold imbalance ratio, not
 resampling), early-stopped on the validation fold, evaluated once on the
 untouched test fold:
 
-- **PR-AUC: 0.3592** (primary metric — the positive class is ~4% of the
+- **PR-AUC: 0.3658** (primary metric — the positive class is ~4% of the
   population, so PR-AUC is the honest number; ROC-AUC alone overstates
   performance at this base rate)
-- **ROC-AUC: 0.8669** (reported as the more familiar secondary number)
+- **ROC-AUC: 0.8700** (reported as the more familiar secondary number)
 
 **Baseline comparison:** a plain logistic regression on the same features
-scores PR-AUC=0.2785 — the LightGBM model's lift over that baseline is
-0.0807 points, not just its absolute PR-AUC (ROC-AUC for the baseline:
-0.8404).
+scores PR-AUC=0.2924 — the LightGBM model's lift over that baseline is
+0.0734 points, not just its absolute PR-AUC (ROC-AUC for the baseline:
+0.8442).
 
 See `data/processed/fig_pr_roc.png`.
 
@@ -174,14 +192,14 @@ See `data/processed/fig_pr_roc.png`.
 Raw LightGBM probabilities feed directly into the dollar formula below, so
 they need to be genuinely calibrated, not just rank-ordered. Isotonic
 regression (via `sklearn`'s `FrozenEstimator`, fit on the validation fold)
-cuts the test-fold **Brier score from 0.0999 to 0.0283**. Reliability
+cuts the test-fold **Brier score from 0.0833 to 0.0271**. Reliability
 diagram: `data/processed/fig_calibration.png`.
 
 ## SHAP interpretation
 
 `data/processed/fig_shap_summary.png`. Top features by mean |SHAP|:
-`num_transactions_last_90d`, `is_auto_renew`, `tenure_days`,
-`num_cancels_lifetime`, `payment_method_id` — auto-renew status and recent
+`is_auto_renew`, `num_transactions_last_90d`, `payment_method_id`,
+`tenure_days`, `num_cancels_lifetime` — auto-renew status and recent
 transaction/engagement behavior dominate. Note: demographic
 columns (city, age, gender, registration channel) are joined into the analysis population but are
 NOT among the model's `FEATURE_COLUMNS` (see `src/modeling.py`) -- they were never given to the
@@ -206,7 +224,7 @@ base-rate across the whole member base, not the much shorter actual
 lifetime of the ~33%-per-cycle-churning target group the campaign
 contacts; and (2) it used raw revenue instead of margin, and was computed
 on the ~12%-sampled test fold (~100k rows) without being scaled up to the
-true test-fold population (~841k rows).
+true test-fold population (~844k rows).
 
 Both are now fixed. `scale_to_full_population(sample_profit, sample_size,
 full_population_size)` rescales a profit figure computed on the sampled
@@ -216,38 +234,36 @@ test-fold population (`full_test_population_size`, captured right after
 Sweeping contact volume against the test fold's calibrated probabilities
 (ARPU=$4.99, contact cost=$3, 15% assumed campaign conversion rate):
 
-- **Best contact volume: top 5%** of the scored base
+- **Best contact volume: top 6%** of the scored base
 - **Expected profit at that volume (21mo lifetime, 100% margin_rate,
-  sampled fold): ~$17,683 — at full-test-population scale: ~$147,662**
-- **Breakeven conversion rate at that volume: 6.9%** — below this,
+  sampled fold): ~$14,967 — at full-test-population scale: ~$125,346**
+- **Breakeven conversion rate at that volume: 8.2%** — below this,
   contacting that many people loses money regardless of how good the churn
   model's ranking is.
 
 ### Scenario table (lifetime and margin sensitivity)
 
-Holding the same top-5% contact volume fixed, varying the lifetime
+Holding the same top-6% contact volume fixed, varying the lifetime
 assumption and margin_rate (real output from `scripts/build_pipeline.py`,
-`sample_profit` on the ~100k-row test fold, `full_population_profit`
-scaled via `scale_to_full_population` to the ~841k-row full test-fold
+`sample_profit` on the ~101k-row test fold, `full_population_profit`
+scaled via `scale_to_full_population` to the ~844k-row full test-fold
 population):
 
 | scenario | sample_profit | full_population_profit |
 |---|---:|---:|
-| 21mo revenue (original assumption) | $17,682.56 | $147,661.62 |
-| 12mo revenue (target-group-adjusted lifetime) | $3,626.89 | $30,287.05 |
-| 12mo margin at 40% margin_rate | -$7,617.64 | -$63,612.60 |
-| 6mo revenue | -$5,743.55 | -$47,962.65 |
+| 21mo revenue (original assumption) | $14,967.30 | $125,345.86 |
+| 12mo revenue (target-group-adjusted lifetime) | $776.74 | $6,504.96 |
+| 12mo margin at 40% margin_rate | -$10,575.70 | -$88,567.75 |
+| 6mo revenue | -$8,683.63 | -$72,722.30 |
 
 Shortening the assumed lifetime from 21 to 12 months (closer to what the
 ~33%-per-cycle-churning target group actually experiences) cuts expected
-profit by roughly 80%; applying a realistic 40% margin_rate on top of
+profit by roughly 95%; applying a realistic 40% margin_rate on top of
 that 12-month lifetime flips the campaign from profitable to a loss; and
 at a 6-month lifetime the campaign is unprofitable even at 100%
 margin_rate. **The headline dollar figure above is reported at
 full-test-population scale (via `scale_to_full_population`) and, where
-`margin_rate` is applied, on margin rather than raw ARPU — the original
-$13.8k/$2.3k figures from an earlier, buggy pipeline run no longer
-apply and should not be cited.**
+`margin_rate` is applied, on margin rather than raw ARPU.**
 
 **Uplift caveat:** this EV model assumes the campaign's `conversion_rate`
 applies uniformly to everyone contacted. In practice, a retention offer's

@@ -1,4 +1,5 @@
 import duckdb
+import pandas as pd
 
 from src.feature_mart import build_feature_mart
 
@@ -45,3 +46,24 @@ def test_build_feature_mart_computes_core_columns():
     assert row["total_secs_last_30"] == 3600.0 + 1800.0
     assert row["total_secs_prior_30"] == 7200.0
     assert row["activity_trend_30d"] == (3600.0 + 1800.0) / 7200.0
+
+
+def test_build_feature_mart_nulls_activity_trend_when_prior_window_is_near_empty():
+    # Fresh msno (U2) isolated from U1's fixture data, with its own
+    # membership row -- the CASE guard needs enough prior-30d signal
+    # (>= 60s) to compute a ratio at all; below that it's NULL, same
+    # as a true-zero denominator.
+    con = _fixture_connection()
+    con.execute("INSERT INTO members VALUES ('U2', '2016-01-01')")
+    con.execute("""
+        INSERT INTO transactions VALUES
+        ('U2', 40, 30, 149.0, 149.0, 1, '2016-12-01', '2016-12-31', 0)
+    """)
+    con.execute("""
+        INSERT INTO user_logs VALUES
+        ('U2', '2016-12-20', 500000.0),
+        ('U2', '2016-11-05', 5.0)
+    """)
+    mart = build_feature_mart(con, "2017-01-01")
+    row = mart[mart["msno"] == "U2"].iloc[0]
+    assert pd.isna(row["activity_trend_30d"])  # prior-30 total (5.0s) is below the 60s floor

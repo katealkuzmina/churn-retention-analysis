@@ -17,6 +17,11 @@ FEATURE_COLUMNS = [
     "total_secs_prior_30", "activity_trend_30d", "days_since_last_log",
 ]
 
+# payment_method_id is a plain integer ID with no ordinal meaning (e.g.
+# 41 isn't "more" than 12) -- told to LightGBM by name at fit time so
+# it splits on it as categories rather than an ordered numeric range.
+CATEGORICAL_COLUMNS = ["payment_method_id"]
+
 
 def train_lightgbm(
     train_df: pd.DataFrame,
@@ -52,6 +57,7 @@ def train_lightgbm(
         train_df[feature_columns], train_df[label_col],
         eval_set=[(val_df[feature_columns], val_df[label_col])],
         eval_metric="average_precision",
+        categorical_feature=[c for c in CATEGORICAL_COLUMNS if c in feature_columns],
         callbacks=[lgb.early_stopping(stopping_rounds=30, first_metric_only=True, verbose=False)],
     )
     return model

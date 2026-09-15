@@ -65,8 +65,8 @@ SELECT
     COALESCE(lr.active_days_last_30, 0) AS active_days_last_30,
     COALESCE(lr.total_secs_last_30, 0.0) AS total_secs_last_30,
     COALESCE(lr.total_secs_prior_30, 0.0) AS total_secs_prior_30,
-    CASE WHEN COALESCE(lr.total_secs_prior_30, 0) = 0 THEN NULL
-         ELSE lr.total_secs_last_30 / lr.total_secs_prior_30 END AS activity_trend_30d,
+    CASE WHEN COALESCE(lr.total_secs_prior_30, 0) < 60 THEN NULL
+         ELSE LEAST(lr.total_secs_last_30 / lr.total_secs_prior_30, 10.0) END AS activity_trend_30d,
     date_diff('day', lr.last_log_date, CAST(? AS DATE)) AS days_since_last_log
 FROM members m
 JOIN last_transaction lt ON lt.msno = m.msno

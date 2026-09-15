@@ -108,7 +108,8 @@ def main() -> None:
         SELECT
             msno,
             city,
-            LEAST(GREATEST(bd, 10), 80) AS bd_clipped,
+            CASE WHEN bd <= 0 OR bd > 100 THEN NULL ELSE bd END AS bd_cleaned,
+            (bd <= 0 OR bd > 100) AS bd_missing,
             gender,
             registered_via
         FROM members
