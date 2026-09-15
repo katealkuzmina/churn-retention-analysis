@@ -111,12 +111,26 @@ def main() -> None:
     log(f"sampled population: {len(sample):,} rows")
     sample.to_parquet("data/processed/sampled_population.parquet", index=False)
 
-    log("building cohort retention table (full transactions population)")
+    log("building cohort retention table (renewal-candidate population)")
     tx_all["month"] = tx_all["transaction_date"].values.astype("datetime64[M]")
     active_periods = tx_all[["msno", "month"]].drop_duplicates().rename(columns={"month": "period"})
     members_df = con.execute("SELECT msno, registration_init_time FROM members").df()
     members_df["registration_init_time"] = pd.to_datetime(members_df["registration_init_time"])
-    cohort_retention = build_cohort_retention(members_df, active_periods)
+    candidate_msnos = population["msno"].unique()
+    members_df = members_df[members_df["msno"].isin(candidate_msnos)]
+
+    data_start = tx_all["transaction_date"].min()
+    data_end = tx_all["transaction_date"].max()
+    cohort_retention = build_cohort_retention(
+        members_df,
+        active_periods,
+        max_observable_month=lambda cohort_month: (
+            (data_end.to_period("M") - cohort_month).n
+        ),
+        min_observable_month=lambda cohort_month: max(
+            0, (data_start.to_period("M") - cohort_month).n
+        ),
+    )
     cohort_retention.to_parquet("data/processed/cohort_retention.parquet")
     log(f"cohort retention table: {cohort_retention.shape}")
 

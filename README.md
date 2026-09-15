@@ -104,8 +104,27 @@ separately in the notebook.
 
 ## Cohort retention and survival analysis
 
-Monthly signup cohorts show the expected shape: steep drop-off in the first
-few months, then a long, slowly-decaying tail for members who stick around
+Monthly signup cohorts, denominator scoped to the renewal-candidate
+population (not every KKBox registrant ever — using the raw 6.77M-row
+`members` table as the denominator was an earlier bug that made month-0
+retention read ~12%). Month-0 retention for cohorts registered *within* the
+transactions data's coverage window (2015-01 through 2017-03) is
+near-universal: mean 80.5%, range 60.1–100.0% across the 26 such cohorts
+(`data/processed/cohort_retention.parquet`, column `0`).
+
+Cohorts registered before 2015-01 — about 56% of the candidate population by
+registration date — show gaps (`NaN`), not zero retention, in their early
+`months_since_signup` values: the transactions data simply doesn't extend
+back that far for them (left-censoring/left-truncation), so those months were
+never observed at all, let alone observed-and-empty. Symmetrically, a
+cohort's latest months are `NaN` once the data hasn't caught up to them yet
+(e.g. the 2017-03 cohort only has a month-0 value). `build_cohort_retention`
+(`src/cohorts.py`) takes both a `min_observable_month` and
+`max_observable_month` bound per cohort and only zero-fills cells inside that
+window — cells outside it, on either edge, stay `NaN` rather than being
+misread as "nobody retained." Beyond month 0, cohorts show the expected
+shape where data exists: steep drop-off in the first few months, then a
+long, slowly-decaying tail for members who stick around
 (`data/processed/fig_cohort_retention.png`).
 
 Kaplan-Meier survival curves (`lifelines`), segmented by auto-renew status
