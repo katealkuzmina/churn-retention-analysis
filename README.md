@@ -92,10 +92,11 @@ called out here rather than tuned away.)
 
 `sql/feature_mart.sql` (DuckDB, parameterized by cutoff date) computes, per
 member: tenure, current subscription state (auto-renew, payment method,
-plan price, discount flag), 90-day transaction/cancellation counts via
-window functions over `transactions`, and 30-day activity aggregates
-(active days, total seconds played, and a 30-vs-prior-30-day activity trend
-ratio) via window functions over `user_logs`. Every subquery filters
+plan price, discount flag), 90-day transaction/cancellation counts via conditional aggregates (`COUNT(*)/SUM(...) FILTER
+(WHERE ...)`) over `transactions`, and 30-day activity aggregates (active days, total seconds
+played, and a 30-vs-prior-30-day activity trend ratio) the same way over `user_logs`. The
+last-transaction-before-cutoff lookup uses a genuine window function (`ROW_NUMBER() OVER (...)`);
+the rolling aggregates do not. Every subquery filters
 strictly before its cutoff — no feature ever sees data on/after its own
 cutoff. `src/feature_mart.py` runs it; `tests/test_feature_mart.py` pins
 the exact window-function arithmetic against a hand-computed fixture.
@@ -177,9 +178,12 @@ diagram: `data/processed/fig_calibration.png`.
 `data/processed/fig_shap_summary.png`. Top features by mean |SHAP|:
 `num_transactions_last_90d`, `is_auto_renew`, `tenure_days`,
 `num_cancels_lifetime`, `payment_method_id` — auto-renew status and recent
-transaction/engagement behavior dominate; demographics barely register.
-Matches the intuition that churn is a behavioral signal, not a
-who-you-are signal.
+transaction/engagement behavior dominate. Note: demographic
+columns (city, age, gender, registration channel) are joined into the analysis population but are
+NOT among the model's `FEATURE_COLUMNS` (see `src/modeling.py`) -- they were never given to the
+model in the first place, so "demographics barely register" would be the wrong conclusion to draw
+from this SHAP plot. Whether demographics matter at all is an open question this project doesn't
+actually answer.
 
 ## Economics: expected value and breakeven conversion rate
 
@@ -289,9 +293,10 @@ Run the test suite (fast — no data download needed for most of it):
 uv run pytest
 ```
 
-Three tests are skipped without the raw/processed data present (raw schema
-smoke test, scored-artifact test, dashboard smoke test) and pass once the
-pipeline above has been run.
+One test (`tests/test_data_smoke.py`) is skipped on a truly fresh clone, before
+`scripts/download_data.sh` has put the raw CSVs in place -- it passes once they're there.
+`data/processed/scored_feature_mart.parquet` is committed to the repo, so the dashboard-smoke
+tests run (and pass) even on a fresh clone without a full pipeline re-run.
 
 ## Limitations
 
