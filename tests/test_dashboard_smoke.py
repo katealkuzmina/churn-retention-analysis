@@ -5,7 +5,7 @@ from streamlit.testing.v1 import AppTest
 
 pytestmark = pytest.mark.skipif(
     not os.path.exists("data/processed/scored_feature_mart.parquet"),
-    reason="scored feature mart not built yet (Task 13)",
+    reason="scored feature mart not built yet",
 )
 
 

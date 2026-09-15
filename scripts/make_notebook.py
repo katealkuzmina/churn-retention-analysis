@@ -132,7 +132,7 @@ code("""extra = con.execute('''
 population = population.merge(extra, on="msno", how="left")
 population.head()""")
 
-md("## 4. Stratified sample to 300k rows (runtime tradeoff, spec Sec 1)")
+md("## 4. Stratified sample to 300k rows (runtime tradeoff)")
 
 code("""population["has_recent_activity"] = population["active_days_last_30"] > 0
 sample = stratified_sample(population, "has_recent_activity", sample_size=300_000, random_state=42)
