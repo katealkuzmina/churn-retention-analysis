@@ -22,7 +22,7 @@ def derive_churn_labels(
     """
     before_cutoff = transactions[transactions["transaction_date"] < cutoff_date]
     last_before = (
-        before_cutoff.sort_values("transaction_date")
+        before_cutoff.sort_values(["transaction_date", "membership_expire_date"])
         .groupby("msno")
         .tail(1)
         .set_index("msno")["membership_expire_date"]

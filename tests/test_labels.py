@@ -76,3 +76,24 @@ def test_derive_churn_labels_ignores_transactions_before_cutoff():
     result = labels.set_index("msno")["is_churn"].to_dict()
 
     assert result == {"E": 1}
+
+
+def test_derive_churn_labels_breaks_same_day_ties_by_expire_date_not_row_order():
+    """Two transactions dated the exact same day, before cutoff, with
+    different membership_expire_date values (e.g. a same-day plan
+    upgrade). `.tail(1)` after sorting only by transaction_date breaks
+    ties by original row order, which is arbitrary -- expire_at_cutoff
+    should reflect the LATEST membership_expire_date among same-day
+    transactions, not whichever happened to sort last.
+    """
+    transactions = pd.DataFrame({
+        "msno": ["F", "F"],
+        "transaction_date": pd.to_datetime(["2016-12-01", "2016-12-01"]),
+        "membership_expire_date": pd.to_datetime(["2016-12-31", "2017-01-31"]),
+        "is_cancel": [0, 0],
+    })
+    cutoff = pd.Timestamp("2016-12-16")
+
+    labels = derive_churn_labels(transactions, cutoff, label_horizon_days=30)
+
+    assert labels.set_index("msno").loc["F", "expire_at_cutoff"] == pd.Timestamp("2017-01-31")
