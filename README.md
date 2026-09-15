@@ -20,15 +20,27 @@ at what campaign conversion rate does contacting them stop being profitable.
 
 ## Data
 
+This repo's code is MIT-licensed (see `LICENSE`); the KKBox dataset
+itself is not — it stays under Kaggle's WSDM 2018 competition rules
+regardless of this repo's license.
+
 - `members_v3.csv` (6.77M rows) — demographics: city, age (`bd`, noisy —
-  clipped to `[10, 80]` in EDA), gender (65% missing — not everyone filled
-  it in), registration channel, registration date.
+  values outside `(0, 100]` are set to `bd_cleaned = NULL` and flagged via
+  `bd_missing` rather than clipped into a fake age, since clipping to
+  `[10, 80]` turned every invalid/unset value into a spurious "10 years
+  old" spike; 67.15% of members (4,545,866 of 6,769,473) are `bd_missing`),
+  gender (65% missing — not everyone filled it in), registration channel,
+  registration date.
 - `transactions.csv` + `transactions_v2.csv` (22.98M rows merged,
   2015-01-01 to 2017-03-31) — payment method, plan price, auto-renew flag,
   transaction date, membership expiry date, cancellation flag.
   `transactions.csv` alone ends exactly on 2017-02-28; the `_v2` extension
-  (through 2017-03-31) is required to correctly label the Feb-28 cutoff,
-  since that label needs to look 30 days into the future.
+  (through 2017-03-31) is required because the test fold's cutoff
+  (2017-01-31) has candidates with `expire_at_cutoff` through 2017-02-27,
+  and correctly labelling those needs transaction data through the 30-day
+  churn-observation horizon -- i.e. through 2017-03-29 -- which
+  `transactions.csv` alone falls short of; `_v2` covers that plus a small
+  margin.
 - `user_logs.csv` + `user_logs_v2.csv` (392M+ rows, ~30GB raw) — daily
   listening activity: play counts by completion bucket, unique tracks,
   total seconds played.
@@ -63,9 +75,12 @@ and the regression test in `tests/test_labels.py`.
 around a given cutoff if their subscription is actually coming up for
 renewal then. Restricting each cutoff's population to members whose
 subscription expiry falls in `[cutoff, cutoff + 28 days)` reproduces
-Kaggle's own `train.csv` population closely: ~956k candidates at ~7.7%
-churn (this project's exact window) vs. `train.csv`'s 993k at 6.4%, with
-95% label agreement on the overlapping members. Without this filter the
+Kaggle's own `train.csv` candidate count closely -- within ~4%
+(this project's train-fold window: ~956k candidates vs. `train.csv`'s
+993k), with 95% label agreement on the overlapping members. Churn rates,
+however, vary by fold (train: ~7.7%, test: ~3.5%) and, on the fold
+actually comparable to `train.csv`'s Jan-2017 cutoff, run well below
+Kaggle's aggregate 6.4% -- see Limitations. Without this filter the
 population includes every member with any transaction history — most of
 them mid-subscription with nothing to decide yet — which inflates apparent
 churn to ~50%.
@@ -74,15 +89,19 @@ churn to ~50%.
 folds (not a random split, which would leak future renewal/activity
 patterns backward into training):
 
+Cutoffs are one month earlier than an initial draft used (which had the test fold's 30-day churn horizon running past 2017-03-31, the last date the data covers — see the regression test in `tests/test_candidates.py`).
+
 | Fold | Cutoff | Candidates | Churn rate |
 |---|---|---|---|
-| Train | 2016-12-31 | 820,637 | 3.99% |
-| Validation | 2017-01-31 | 841,374 | 3.58% |
-| Test | 2017-02-28 | 837,245 | 4.08% |
+| Train | 2016-11-30 | 842,708 | 7.644% |
+| Validation | 2016-12-31 | 823,209 | 4.046% |
+| Test | 2017-01-31 | 844,114 | 3.656% |
 
 (For reference: Kaggle's own `train.csv`, a similar Jan-2017-cutoff
 population defined slightly differently, reports 992,931 members at 6.39%
-churn — this project's numbers are in the same ballpark; the gap is
+churn. Candidate counts land in the same ballpark across this project's
+folds; churn rates do not -- the test fold's 3.656% is the genuinely
+comparable number here, and it's well below `train.csv`'s 6.39%,
 attributable to the exact candidate-window and lookback choices above,
 called out here rather than tuned away.)
 
@@ -90,25 +109,70 @@ called out here rather than tuned away.)
 
 `sql/feature_mart.sql` (DuckDB, parameterized by cutoff date) computes, per
 member: tenure, current subscription state (auto-renew, payment method,
-plan price, discount flag), 90-day transaction/cancellation counts via
-window functions over `transactions`, and 30-day activity aggregates
-(active days, total seconds played, and a 30-vs-prior-30-day activity trend
-ratio) via window functions over `user_logs`. Every subquery filters
+plan price, discount flag), 90-day transaction/cancellation counts via conditional aggregates (`COUNT(*)/SUM(...) FILTER
+(WHERE ...)`) over `transactions`, and 30-day activity aggregates (active days, total seconds
+played, and a 30-vs-prior-30-day activity trend ratio) the same way over `user_logs`. The
+last-transaction-before-cutoff lookup uses a genuine window function (`ROW_NUMBER() OVER (...)`);
+the rolling aggregates do not. Every subquery filters
 strictly before its cutoff — no feature ever sees data on/after its own
 cutoff. `src/feature_mart.py` runs it; `tests/test_feature_mart.py` pins
 the exact window-function arithmetic against a hand-computed fixture.
 Demographic columns (city, age, gender, registration channel) are joined in
 separately in the notebook.
 
+`activity_trend_30d` (`total_secs_last_30 / total_secs_prior_30`) is `NULL`
+when the prior-30-day window has under 60 seconds of listening (not enough
+signal to compute a ratio off of — a near-zero denominator used to blow the
+ratio up to absurd values, e.g. 5.9e6, off of a single second of prior
+activity) and is capped at `10.0` (`LEAST(..., 10.0)`) otherwise, so one
+outlier row can't dominate any model that uses this feature. On the actual
+sampled population this caps the max observed ratio at exactly `10.0`
+(previously unbounded) with 16.3% of rows `NULL`.
+
+`payment_method_id` is a plain integer ID with no ordinal meaning (payment
+method 41 isn't "more" than 12) — `train_lightgbm` (`src/modeling.py`)
+passes it to LightGBM via the native `categorical_feature=["payment_method_id"]`
+fit-time parameter rather than feeding it in as an ordered numeric feature.
+
 ## Cohort retention and survival analysis
 
-Monthly signup cohorts show the expected shape: steep drop-off in the first
-few months, then a long, slowly-decaying tail for members who stick around
+Monthly signup cohorts, denominator scoped to the renewal-candidate
+population (not every KKBox registrant ever — using the raw 6.77M-row
+`members` table as the denominator was an earlier bug that made month-0
+retention read ~12%). Month-0 retention for cohorts registered *within* the
+transactions data's coverage window (2015-01 through 2017-03) is
+near-universal: mean 80.5%, range 60.0–100.0% across the 26 such cohorts
+(`data/processed/cohort_retention.parquet`, column `0`). That ~80.5%
+(not ~100%) reflects `active_periods` being built from transaction-months
+rather than a full subscription-span expansion, so a member who doesn't
+transact again immediately in their signup month reads as not-yet-retained
+even if their subscription was still nominally active -- a defensible
+activity proxy, not a literal subscription-span calculation (see
+`src/cohorts.py`'s `build_cohort_retention` docstring).
+
+Cohorts registered before 2015-01 — about 56% of the candidate population by
+registration date — show gaps (`NaN`), not zero retention, in their early
+`months_since_signup` values: the transactions data simply doesn't extend
+back that far for them (left-censoring/left-truncation), so those months were
+never observed at all, let alone observed-and-empty. Symmetrically, a
+cohort's latest months are `NaN` once the data hasn't caught up to them yet
+(e.g. the 2017-03 cohort only has a month-0 value). `build_cohort_retention`
+(`src/cohorts.py`) takes both a `min_observable_month` and
+`max_observable_month` bound per cohort and only zero-fills cells inside that
+window — cells outside it, on either edge, stay `NaN` rather than being
+misread as "nobody retained." Beyond month 0, cohorts show the expected
+shape where data exists: steep drop-off in the first few months, then a
+long, slowly-decaying tail for members who stick around
 (`data/processed/fig_cohort_retention.png`).
 
 Kaplan-Meier survival curves (`lifelines`), segmented by auto-renew status
-and registration channel, show materially different survival profiles —
-confirmed with log-rank tests (auto-renew: p≈0; registration channel: p=6e-36).
+and registration channel. Duration is time from registration to the renewal
+decision at the test cutoff (`expire_at_cutoff - registration_init_time`);
+event is whether that renewal decision ended in churn (`is_churn`) — this
+ties duration to the same renewal decision the event describes, rather than
+an unrelated calendar-tenure snapshot as of a fixed date. Segments show
+materially different survival profiles, confirmed with log-rank tests
+(auto-renew: p≈0; registration channel: p=3.606e-19).
 See `data/processed/fig_survival_curves.png`.
 
 ## Hypothesis testing
@@ -126,10 +190,15 @@ LightGBM (`scale_pos_weight` set to the train-fold imbalance ratio, not
 resampling), early-stopped on the validation fold, evaluated once on the
 untouched test fold:
 
-- **PR-AUC: 0.339** (primary metric — the positive class is ~4% of the
+- **PR-AUC: 0.3658** (primary metric — the positive class is ~4% of the
   population, so PR-AUC is the honest number; ROC-AUC alone overstates
   performance at this base rate)
-- **ROC-AUC: 0.890** (reported as the more familiar secondary number)
+- **ROC-AUC: 0.8700** (reported as the more familiar secondary number)
+
+**Baseline comparison:** a plain logistic regression on the same features
+scores PR-AUC=0.2924 — the LightGBM model's lift over that baseline is
+0.0734 points, not just its absolute PR-AUC (ROC-AUC for the baseline:
+0.8442).
 
 See `data/processed/fig_pr_roc.png`.
 
@@ -138,34 +207,88 @@ See `data/processed/fig_pr_roc.png`.
 Raw LightGBM probabilities feed directly into the dollar formula below, so
 they need to be genuinely calibrated, not just rank-ordered. Isotonic
 regression (via `sklearn`'s `FrozenEstimator`, fit on the validation fold)
-cuts the test-fold **Brier score from 0.0359 to 0.0309**. Reliability
+cuts the test-fold **Brier score from 0.0833 to 0.0271**. Reliability
 diagram: `data/processed/fig_calibration.png`.
 
 ## SHAP interpretation
 
 `data/processed/fig_shap_summary.png`. Top features by mean |SHAP|:
-`is_auto_renew`, `payment_method_id`, `num_transactions_last_90d`,
-`active_days_last_30`, `tenure_days` — auto-renew status and recent
-transaction/engagement behavior dominate; demographics barely register.
-Matches the intuition that churn is a behavioral signal, not a
-who-you-are signal.
+`is_auto_renew`, `num_transactions_last_90d`, `payment_method_id`,
+`tenure_days`, `num_cancels_lifetime` — auto-renew status and recent
+transaction/engagement behavior dominate. Note: demographic
+columns (city, age, gender, registration channel) are joined into the analysis population but are
+NOT among the model's `FEATURE_COLUMNS` (see `src/modeling.py`) -- they were never given to the
+model in the first place, so "demographics barely register" would be the wrong conclusion to draw
+from this SHAP plot. Whether demographics matter at all is an open question this project doesn't
+actually answer.
 
 ## Economics: expected value and breakeven conversion rate
 
 `src/economics.py` turns a calibrated churn probability into a dollar
 decision: `ev_per_contact = p_churn * conversion_rate * (arpu *
-avg_lifetime_months) - contact_cost`, summed over whichever top-k% of the
-scored base gets contacted. Sweeping contact volume against the test
-fold's calibrated probabilities (assuming ARPU=$4.99, average lifetime=21
-months, contact cost=$3, and a 15% campaign conversion rate as a
-planning assumption):
+avg_lifetime_months * margin_rate) - contact_cost`, summed over whichever
+top-k% of the scored base gets contacted. `ltv`/`ev_per_contact`/
+`campaign_expected_profit`/`breakeven_conversion_rate` all take a
+`margin_rate` parameter (default `1.0`, i.e. raw ARPU/revenue, for
+backward compatibility) so the campaign's spend (`contact_cost`) can be
+weighed against the *margin* it actually keeps, not gross revenue.
 
-- **Best contact volume: top 7%** of the scored base
-- **Expected profit at that volume: ~$13,800** (at the 15% assumed
-  conversion rate)
-- **Breakeven conversion rate at that volume: 9.1%** — below this,
+**A mentor review flagged two problems with the original headline
+number:** (1) it assumed a 21-month average lifetime, which is the
+base-rate across the whole member base, not the much shorter actual
+lifetime of the ~33%-per-cycle-churning target group the campaign
+contacts; and (2) it used raw revenue instead of margin, and was computed
+on the ~12%-sampled test fold (~100k rows) without being scaled up to the
+true test-fold population (~844k rows).
+
+Both are now fixed. `scale_to_full_population(sample_profit, sample_size,
+full_population_size)` rescales a profit figure computed on the sampled
+fold up to what contacting the same top-k% of the *full* un-sampled
+test-fold population (`full_test_population_size`, captured right after
+`population` is built and before `stratified_sample` runs) would yield.
+Sweeping contact volume against the test fold's calibrated probabilities
+(ARPU=$4.99, contact cost=$3, 15% assumed campaign conversion rate):
+
+- **Best contact volume: top 6%** of the scored base
+- **Expected profit at that volume (21mo lifetime, 100% margin_rate,
+  sampled fold): ~$14,967 — at full-test-population scale: ~$125,346**
+- **Breakeven conversion rate at that volume: 8.2%** — below this,
   contacting that many people loses money regardless of how good the churn
-  model's ranking is. This is the number to hand a stakeholder, not AUC.
+  model's ranking is.
+
+### Scenario table (lifetime and margin sensitivity)
+
+Holding the same top-6% contact volume fixed, varying the lifetime
+assumption and margin_rate (real output from `scripts/build_pipeline.py`,
+`sample_profit` on the ~101k-row test fold, `full_population_profit`
+scaled via `scale_to_full_population` to the ~844k-row full test-fold
+population):
+
+| scenario | sample_profit | full_population_profit |
+|---|---:|---:|
+| 21mo revenue (original assumption) | $14,967.30 | $125,345.86 |
+| 12mo revenue (target-group-adjusted lifetime) | $776.74 | $6,504.96 |
+| 12mo margin at 40% margin_rate | -$10,575.70 | -$88,567.75 |
+| 6mo revenue | -$8,683.63 | -$72,722.30 |
+
+Shortening the assumed lifetime from 21 to 12 months (closer to what the
+~33%-per-cycle-churning target group actually experiences) cuts expected
+profit by roughly 95%; applying a realistic 40% margin_rate on top of
+that 12-month lifetime flips the campaign from profitable to a loss; and
+at a 6-month lifetime the campaign is unprofitable even at 100%
+margin_rate. **The headline dollar figure above is reported at
+full-test-population scale (via `scale_to_full_population`) and, where
+`margin_rate` is applied, on margin rather than raw ARPU.**
+
+**Uplift caveat:** this EV model assumes the campaign's `conversion_rate`
+applies uniformly to everyone contacted. In practice, a retention offer's
+effect (uplift) varies by member — some would've stayed anyway, some
+can't be saved regardless of the offer. Properly targeting contact volume
+would use an uplift model (e.g. two-model or a causal-tree approach
+trained on historical campaign A/B data) to target *persuadable* members,
+not just *highest-churn-risk* ones. Not implemented here — flagged as the
+natural next step, since it changes who gets contacted, not just the
+breakeven math.
 
 See `data/processed/fig_campaign_economics.png`.
 
@@ -173,10 +296,15 @@ See `data/processed/fig_campaign_economics.png`.
 
 `dashboard/app.py` (Streamlit) — four pages: Overview, Survival &
 hypothesis tests, Model performance, and a live **Campaign economics**
-page where ARPU/lifetime/contact-cost/conversion-rate are sliders and the
+page where ARPU/lifetime/contact-cost/conversion-rate/margin-rate are sliders and the
 expected-profit and breakeven-conversion-rate numbers recompute instantly
 via the same `src/economics.py` functions used in the notebook (no
 duplicated logic between the two).
+
+The dashboard reads its PNGs and parquet files from `data/processed/`,
+which is gitignored (see "How to reproduce" below) -- run the pipeline
+once (notebook or `scripts/build_pipeline.py`) before launching it on a
+fresh clone, or it has nothing to display.
 
 ```bash
 uv run streamlit run dashboard/app.py
@@ -187,14 +315,20 @@ uv run streamlit run dashboard/app.py
 ```bash
 uv sync
 ./scripts/download_data.sh          # needs `kaggle` CLI credentials + accepted competition rules
-# one-time raw CSV -> Parquet conversion with date casting (see scripts/build_pipeline.py
-# for the exact DuckDB COPY statements, or scripts/make_notebook.py + nbconvert below)
-uv run python scripts/make_notebook.py
+uv run python scripts/convert_to_parquet.py   # one-time raw CSV -> Parquet conversion with date casting
 PYTHONPATH=. uv run jupyter nbconvert --to notebook --execute \
   --ExecutePreprocessor.timeout=540 churn_retention_analysis.ipynb \
   --output churn_retention_analysis.ipynb
 uv run streamlit run dashboard/app.py
 ```
+
+`churn_retention_analysis.ipynb` is committed pre-executed, already
+reflecting all 15 remediation tasks -- re-running it in place via
+`nbconvert --execute` (as above) is how you reproduce it. Do **not** run
+`scripts/make_notebook.py` to regenerate it from scratch: that generator
+predates most of the remediation work and would overwrite the current
+notebook with a stale, broken version (see the warning comment at the top
+of that script).
 
 `scripts/build_pipeline.py` is a non-interactive equivalent of the notebook
 (same `src/` calls, no plots) — useful for quick end-to-end reruns while
@@ -206,9 +340,13 @@ Run the test suite (fast — no data download needed for most of it):
 uv run pytest
 ```
 
-Three tests are skipped without the raw/processed data present (raw schema
-smoke test, scored-artifact test, dashboard smoke test) and pass once the
-pipeline above has been run.
+On a truly fresh clone, six tests are skipped: one (`tests/test_data_smoke.py`) skips
+before `scripts/download_data.sh` has put the raw CSVs in place -- it passes once they're
+there. The other five (`tests/test_dashboard_smoke.py`) skip because `data/processed/`
+is gitignored (Task 14 stopped tracking derived data -- see `.gitignore`), so
+`data/processed/scored_feature_mart.parquet` doesn't exist yet on a fresh clone; they
+pass once a full pipeline run (`nbconvert --execute` or `scripts/build_pipeline.py`) has
+populated `data/processed/`.
 
 ## Limitations
 

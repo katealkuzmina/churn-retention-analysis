@@ -1,4 +1,4 @@
-"""Scratch driver for the end-to-end churn-retention pipeline (spec Sec 3-9a).
+"""Non-interactive driver for the end-to-end churn-retention pipeline.
 
 Validated here as a plain script first (faster iteration on real 30GB+
 data than re-running notebook cells), then folded into
@@ -8,13 +8,19 @@ from __future__ import annotations
 
 import gc
 import time
+from pathlib import Path
 
 import duckdb
 import numpy as np
 import pandas as pd
 
+from src.candidates import scope_to_renewal_candidates
 from src.cohorts import build_cohort_retention
-from src.economics import breakeven_conversion_rate, campaign_expected_profit
+from src.economics import (
+    breakeven_conversion_rate,
+    campaign_expected_profit,
+    scale_to_full_population,
+)
 from src.feature_mart import build_feature_mart
 from src.hypothesis_tests import (
     chi_square_independence,
@@ -28,15 +34,16 @@ from src.modeling import (
     calibrate_isotonic,
     evaluate,
     train_lightgbm,
+    train_logistic_baseline,
 )
 from src.sampling import stratified_sample
 from src.shap_utils import compute_shap_values
 from src.survival import logrank_pvalue
 
 CUTOFFS = {
-    "train": "2016-12-31",
-    "val": "2017-01-31",
-    "test": "2017-02-28",
+    "train": "2016-11-30",
+    "val": "2016-12-31",
+    "test": "2017-01-31",
 }
 
 
@@ -45,6 +52,12 @@ def log(msg: str) -> None:
 
 
 def connect() -> duckdb.DuckDBPyConnection:
+    # data/interim/ is gitignored (only .gitkeep tracked); DuckDB's
+    # temp_directory setting does not create missing directories itself
+    # (verified empirically -- SET alone, and a forced spill, both leave a
+    # missing leaf dir uncreated / erroring), so create it defensively.
+    Path("data/interim/duckdb_tmp").mkdir(parents=True, exist_ok=True)
+
     con = duckdb.connect()
     con.execute('SET memory_limit="4GB"')
     con.execute("SET threads TO 4")
@@ -59,7 +72,7 @@ def main() -> None:
     con = connect()
 
     log("loading transactions once (reused across cutoffs, labels, cohorts)")
-    tx_all = con.execute("SELECT msno, transaction_date, membership_expire_date FROM transactions").df()
+    tx_all = con.execute("SELECT msno, transaction_date, membership_expire_date, is_cancel FROM transactions").df()
     tx_all["transaction_date"] = pd.to_datetime(tx_all["transaction_date"])
     tx_all["membership_expire_date"] = pd.to_datetime(tx_all["membership_expire_date"])
     log(f"  transactions: {len(tx_all):,} rows")
@@ -74,17 +87,14 @@ def main() -> None:
         # coming up for renewal shortly after cutoff are "at risk" this
         # period. Without this, the population includes everyone with any
         # transaction history (many mid-subscription, nothing to decide
-        # yet), which inflates churn to ~50% instead of the ~6% KKBox's
-        # own train.csv reports for the equivalent Jan-cutoff population
-        # (validated: this filter reproduces ~956k candidates at ~7.7%
-        # churn vs. train.csv's 993k at 6.4%, 95% label agreement on the
-        # overlap).
-        cutoff_ts = pd.Timestamp(cutoff)
-        labels = labels[
-            (labels["expire_at_cutoff"] >= cutoff_ts)
-            & (labels["expire_at_cutoff"] < cutoff_ts + pd.Timedelta(days=28))
-        ]
-        merged = mart.merge(labels[["msno", "is_churn"]], on="msno", how="inner")
+        # yet), which inflates churn to ~50%.
+        # Candidate counts land within ~4% of KKBox's own train.csv
+        # population (~956k here vs. train.csv's 993k, 95% label agreement
+        # on the overlap); churn rates vary by fold (train: ~7.7%, test:
+        # ~3.5%) and run below train.csv's aggregate 6.4% -- see README
+        # Limitations.
+        labels = scope_to_renewal_candidates(labels, pd.Timestamp(cutoff), window_days=28)
+        merged = mart.merge(labels[["msno", "is_churn", "expire_at_cutoff"]], on="msno", how="inner")
         merged["fold"] = fold_name
         folds.append(merged)
         log(f"  {fold_name} ({cutoff}): {len(merged):,} rows in {time.time()-t0:.1f}s, "
@@ -95,12 +105,19 @@ def main() -> None:
     gc.collect()
     log(f"combined population: {len(population):,} rows")
 
-    log("adding demographic + remaining spec Sec4 columns")
+    # Captured here, BEFORE stratified_sample runs below, so downstream
+    # economics scaling (scale_to_full_population) reflects the true
+    # un-sampled test-fold candidate count, not the ~12%-sampled fold size.
+    full_test_population_size = (population["fold"] == "test").sum()
+    log(f"full (un-sampled) test-fold population: {full_test_population_size:,} rows")
+
+    log("adding demographic columns")
     extra = con.execute("""
         SELECT
             msno,
             city,
-            LEAST(GREATEST(bd, 10), 80) AS bd_clipped,
+            CASE WHEN bd <= 0 OR bd > 100 THEN NULL ELSE bd END AS bd_cleaned,
+            (bd <= 0 OR bd > 100) AS bd_missing,
             gender,
             registered_via
         FROM members
@@ -113,12 +130,26 @@ def main() -> None:
     log(f"sampled population: {len(sample):,} rows")
     sample.to_parquet("data/processed/sampled_population.parquet", index=False)
 
-    log("building cohort retention table (full transactions population)")
+    log("building cohort retention table (renewal-candidate population)")
     tx_all["month"] = tx_all["transaction_date"].values.astype("datetime64[M]")
     active_periods = tx_all[["msno", "month"]].drop_duplicates().rename(columns={"month": "period"})
     members_df = con.execute("SELECT msno, registration_init_time FROM members").df()
     members_df["registration_init_time"] = pd.to_datetime(members_df["registration_init_time"])
-    cohort_retention = build_cohort_retention(members_df, active_periods)
+    candidate_msnos = population["msno"].unique()
+    members_df = members_df[members_df["msno"].isin(candidate_msnos)]
+
+    data_start = tx_all["transaction_date"].min()
+    data_end = tx_all["transaction_date"].max()
+    cohort_retention = build_cohort_retention(
+        members_df,
+        active_periods,
+        max_observable_month=lambda cohort_month: (
+            (data_end.to_period("M") - cohort_month).n
+        ),
+        min_observable_month=lambda cohort_month: max(
+            0, (data_start.to_period("M") - cohort_month).n
+        ),
+    )
     cohort_retention.to_parquet("data/processed/cohort_retention.parquet")
     log(f"cohort retention table: {cohort_retention.shape}")
 
@@ -126,8 +157,10 @@ def main() -> None:
     test_fold = sample[sample["fold"] == "test"].merge(
         members_df[["msno", "registration_init_time"]], on="msno", how="left"
     )
+    # Duration is time-to-event, tied to the same renewal decision
+    # is_churn describes -- not an unrelated calendar-tenure snapshot.
     test_fold["duration_days"] = (
-        pd.Timestamp(CUTOFFS["test"]) - test_fold["registration_init_time"]
+        test_fold["expire_at_cutoff"] - test_fold["registration_init_time"]
     ).dt.days
     survival_results = {}
     for segment_col in ["is_auto_renew", "registered_via"]:
@@ -155,9 +188,22 @@ def main() -> None:
         p_values.append(p)
         test_labels.append("registered_via_vs_churn")
 
+    price_tercile = pd.qcut(test_fold["plan_list_price"], 3, labels=["low", "mid", "high"], duplicates="drop")
+    price_table = pd.crosstab(price_tercile, test_fold["is_churn"])
+    if price_table.shape[0] > 1:
+        _, p = chi_square_independence(price_table)
+        p_values.append(p)
+        test_labels.append("price_tercile_vs_churn")
+
     reject_flags = correct_pvalues(p_values) if p_values else []
     for label, p, reject in zip(test_labels, p_values, reject_flags):
         log(f"  {label}: p={p:.4g}, significant_after_BH={reject}")
+
+    hypothesis_results = pd.DataFrame(
+        {"test": test_labels, "p_value": p_values, "significant_after_BH": reject_flags}
+    )
+    hypothesis_results.to_parquet("data/processed/hypothesis_test_results.parquet", index=False)
+    log(f"  wrote {len(hypothesis_results)} rows to data/processed/hypothesis_test_results.parquet")
 
     log("temporal train/val/test split + LightGBM")
     train_df = sample[sample["fold"] == "train"]
@@ -169,6 +215,11 @@ def main() -> None:
     model = train_lightgbm(train_df, val_df)
     metrics = evaluate(model, test_df)
     log(f"  test PR-AUC={metrics['pr_auc']:.4f} ROC-AUC={metrics['roc_auc']:.4f}")
+
+    log("training logistic-regression baseline for comparison")
+    baseline = train_logistic_baseline(train_df)
+    baseline_metrics = evaluate(baseline, test_df)
+    log(f"  baseline PR-AUC={baseline_metrics['pr_auc']:.4f} ROC-AUC={baseline_metrics['roc_auc']:.4f}")
 
     log("isotonic calibration")
     calibrated = calibrate_isotonic(model, val_df)
@@ -197,6 +248,26 @@ def main() -> None:
         p_series, top_k_fraction=best_k, arpu=4.99, avg_lifetime_months=21, contact_cost=3.0,
     )
     log(f"  best top-k={best_k:.0%}, expected profit=${best_profit:,.0f}, breakeven conversion={breakeven:.1%}")
+
+    log("economics scenario table (lifetime/margin sensitivity, scaled to full test population)")
+    scenarios = []
+    for label, lifetime_months, margin_rate in [
+        ("21mo revenue (original assumption)", 21, 1.0),
+        ("12mo revenue (target-group-adjusted lifetime)", 12, 1.0),
+        ("12mo margin at 40% margin_rate", 12, 0.4),
+        ("6mo revenue", 6, 1.0),
+    ]:
+        sample_profit = campaign_expected_profit(
+            p_series, best_k, conversion_rate=0.15, arpu=4.99,
+            avg_lifetime_months=lifetime_months, contact_cost=3.0, margin_rate=margin_rate,
+        )
+        full_profit = scale_to_full_population(
+            sample_profit, sample_size=len(p_series), full_population_size=full_test_population_size,
+        )
+        scenarios.append({"scenario": label, "sample_profit": sample_profit, "full_population_profit": full_profit})
+
+    scenario_table = pd.DataFrame(scenarios)
+    log("\n" + scenario_table.to_string(index=False))
 
     log("writing scored feature mart")
     scored = test_df.copy()

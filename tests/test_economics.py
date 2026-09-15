@@ -6,6 +6,7 @@ from src.economics import (
     campaign_expected_profit,
     ev_per_contact,
     ltv,
+    scale_to_full_population,
 )
 
 
@@ -32,6 +33,15 @@ def test_campaign_expected_profit_sums_over_top_k():
     assert profit == pytest.approx(expected)
 
 
+def test_ltv_accepts_a_margin_rate_and_returns_margin_not_revenue():
+    # ARPU=$5, 12 months, 40% gross margin -> $24 of margin, not $60 of revenue.
+    assert ltv(arpu=5.0, avg_lifetime_months=12, margin_rate=0.4) == 24.0
+
+
+def test_ltv_defaults_margin_rate_to_1_for_backward_compatibility():
+    assert ltv(arpu=5.0, avg_lifetime_months=12) == 60.0
+
+
 def test_breakeven_conversion_rate_zeroes_out_profit():
     p_churn = pd.Series([0.9, 0.8, 0.1, 0.05])
     rate = breakeven_conversion_rate(
@@ -43,3 +53,7 @@ def test_breakeven_conversion_rate_zeroes_out_profit():
         arpu=4.99, avg_lifetime_months=21, contact_cost=3.0,
     )
     assert profit_at_breakeven == pytest.approx(0.0, abs=1e-9)
+
+
+def test_scale_to_full_population_multiplies_by_inverse_sample_fraction():
+    assert scale_to_full_population(sample_profit=100.0, sample_size=10, full_population_size=100) == 1000.0

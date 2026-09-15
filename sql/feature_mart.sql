@@ -1,12 +1,22 @@
 -- One row per msno with a membership on file as of the cutoff date.
 -- Every CTE filters strictly before the cutoff -- no feature may see
--- data on/after its own cutoff (spec Sec 3). Placeholders are positional,
+-- data on/after its own cutoff. Placeholders are positional,
 -- each bound to the same cutoff_date value by src/feature_mart.py.
 
 WITH last_transaction AS (
+    -- Tie-broken by every remaining column (not just transaction_date) so
+    -- the "most recent transaction" pick is fully deterministic even when
+    -- a member has multiple same-day transactions -- DuckDB's parallel
+    -- scan does not guarantee row order, so ROW_NUMBER() on
+    -- transaction_date alone silently picked a different row across runs.
     SELECT * FROM (
         SELECT t.*,
-            ROW_NUMBER() OVER (PARTITION BY msno ORDER BY transaction_date DESC) AS rn
+            ROW_NUMBER() OVER (
+                PARTITION BY msno
+                ORDER BY transaction_date DESC, membership_expire_date DESC,
+                    payment_method_id, payment_plan_days, plan_list_price,
+                    actual_amount_paid, is_auto_renew, is_cancel
+            ) AS rn
         FROM transactions t
         WHERE t.transaction_date < CAST(? AS DATE)
     )
@@ -55,10 +65,11 @@ SELECT
     COALESCE(lr.active_days_last_30, 0) AS active_days_last_30,
     COALESCE(lr.total_secs_last_30, 0.0) AS total_secs_last_30,
     COALESCE(lr.total_secs_prior_30, 0.0) AS total_secs_prior_30,
-    CASE WHEN COALESCE(lr.total_secs_prior_30, 0) = 0 THEN NULL
-         ELSE lr.total_secs_last_30 / lr.total_secs_prior_30 END AS activity_trend_30d,
+    CASE WHEN COALESCE(lr.total_secs_prior_30, 0) < 60 THEN NULL
+         ELSE LEAST(lr.total_secs_last_30 / lr.total_secs_prior_30, 10.0) END AS activity_trend_30d,
     date_diff('day', lr.last_log_date, CAST(? AS DATE)) AS days_since_last_log
 FROM members m
 JOIN last_transaction lt ON lt.msno = m.msno
 LEFT JOIN tx_rolling tr ON tr.msno = m.msno
-LEFT JOIN logs_rolling lr ON lr.msno = m.msno;
+LEFT JOIN logs_rolling lr ON lr.msno = m.msno
+ORDER BY m.msno;

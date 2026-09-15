@@ -2,6 +2,14 @@
 
 Not a project deliverable itself -- run once to (re)build the notebook
 file, which is what actually gets executed and committed.
+
+STALE / NOT CURRENTLY MAINTAINED: this generator predates most of the
+15-task mentor-review remediation (old CUTOFFS, missing `is_cancel` in the
+tx_all query, inline candidate filtering instead of `src/candidates.py`,
+etc.). Do not run it -- it would overwrite the current, correct,
+committed notebook with a broken pre-remediation version. Needs a full
+sync to the current `src/` and `scripts/build_pipeline.py` before it's
+safe to run again (tracked as a follow-up task).
 """
 import nbformat as nbf
 
@@ -19,13 +27,11 @@ def code(text):
 
 md("""# Subscription Churn: From Prediction to Retention Economics
 
-KKBox churn prediction + retention economics. See
-`docs/superpowers/specs/2026-09-09-churn-retention-design.md` for the
-full design spec. This notebook builds the SQL feature mart, runs
-cohort/survival analysis and hypothesis tests, trains a temporally
-validated LightGBM model, calibrates it, explains it with SHAP, and
-turns the calibrated probabilities into a retention-campaign expected
-value / breakeven analysis.""")
+KKBox churn prediction + retention economics. This notebook builds the
+SQL feature mart, runs cohort/survival analysis and hypothesis tests,
+trains a temporally validated LightGBM model, calibrates it, explains it
+with SHAP, and turns the calibrated probabilities into a
+retention-campaign expected value / breakeven analysis.""")
 
 code("""import warnings
 warnings.filterwarnings("ignore")
@@ -132,7 +138,7 @@ code("""extra = con.execute('''
 population = population.merge(extra, on="msno", how="left")
 population.head()""")
 
-md("## 4. Stratified sample to 300k rows (runtime tradeoff, spec Sec 1)")
+md("## 4. Stratified sample to 300k rows (runtime tradeoff)")
 
 code("""population["has_recent_activity"] = population["active_days_last_30"] > 0
 sample = stratified_sample(population, "has_recent_activity", sample_size=300_000, random_state=42)

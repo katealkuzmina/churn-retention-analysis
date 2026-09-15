@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import duckdb
 import pandas as pd
 import streamlit as st
+from sklearn.metrics import average_precision_score, roc_auc_score
 
 from src.economics import breakeven_conversion_rate, campaign_expected_profit
 
@@ -33,24 +34,31 @@ mart = load_scored_mart()
 if page == "Overview":
     st.title("Overview")
     st.metric("Base churn rate", f"{mart['is_churn'].mean():.1%}")
-    st.caption(
-        "Cohort retention heatmap and KPI tiles render from "
-        "data/processed/cohort_retention.parquet (Task 13)."
-    )
+    st.metric("Scored population", f"{len(mart):,}")
+    st.image("data/processed/fig_cohort_retention.png", caption="Monthly cohort retention")
 
 elif page == "Survival & hypothesis tests":
     st.title("Survival & hypothesis tests")
-    st.caption(
-        "KM curves by segment and the corrected hypothesis-test table render "
-        "from data/processed/survival_results.parquet (Task 13)."
+    st.image(
+        "data/processed/fig_survival_curves.png",
+        caption="Kaplan-Meier survival curves by segment",
     )
+    hyp = pd.read_parquet("data/processed/hypothesis_test_results.parquet")
+    st.dataframe(hyp)
 
 elif page == "Model performance":
     st.title("Model performance")
-    st.caption(
-        "PR/ROC curves, calibration diagram, decile lift table, and SHAP "
-        "summary render from data/processed/model_eval.parquet (Task 13)."
+    st.metric(
+        "Test PR-AUC",
+        f"{average_precision_score(mart['is_churn'], mart['p_churn_calibrated']):.3f}",
     )
+    st.metric(
+        "Test ROC-AUC",
+        f"{roc_auc_score(mart['is_churn'], mart['p_churn_calibrated']):.3f}",
+    )
+    st.image("data/processed/fig_pr_roc.png", caption="PR / ROC curves")
+    st.image("data/processed/fig_calibration.png", caption="Calibration reliability diagram")
+    st.image("data/processed/fig_shap_summary.png", caption="SHAP summary")
 
 elif page == "Campaign economics":
     st.title("Campaign economics")
@@ -59,13 +67,14 @@ elif page == "Campaign economics":
     contact_cost = st.slider("Contact cost ($)", 0.5, 20.0, 3.0)
     conversion_rate = st.slider("Assumed campaign conversion rate", 0.0, 1.0, 0.15)
     top_k = st.slider("Contact top K% of scored base", 1, 100, 12) / 100
+    margin_rate = st.slider("Margin rate (share of ARPU kept as margin)", 0.1, 1.0, 0.4)
 
     profit = campaign_expected_profit(
         mart["p_churn_calibrated"], top_k, conversion_rate,
-        arpu, avg_lifetime_months, contact_cost,
+        arpu, avg_lifetime_months, contact_cost, margin_rate=margin_rate,
     )
     breakeven = breakeven_conversion_rate(
-        mart["p_churn_calibrated"], top_k, arpu, avg_lifetime_months, contact_cost,
+        mart["p_churn_calibrated"], top_k, arpu, avg_lifetime_months, contact_cost, margin_rate=margin_rate,
     )
     st.metric("Expected campaign profit", f"${profit:,.0f}")
     st.metric("Breakeven conversion rate", f"{breakeven:.1%}")

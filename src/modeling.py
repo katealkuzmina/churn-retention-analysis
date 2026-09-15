@@ -4,7 +4,11 @@ import lightgbm as lgb
 import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.frozen import FrozenEstimator
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 FEATURE_COLUMNS = [
     "tenure_days", "is_auto_renew", "payment_method_id", "plan_list_price",
@@ -12,6 +16,11 @@ FEATURE_COLUMNS = [
     "num_cancels_lifetime", "active_days_last_30", "total_secs_last_30",
     "total_secs_prior_30", "activity_trend_30d", "days_since_last_log",
 ]
+
+# payment_method_id is a plain integer ID with no ordinal meaning (e.g.
+# 41 isn't "more" than 12) -- told to LightGBM by name at fit time so
+# it splits on it as categories rather than an ordered numeric range.
+CATEGORICAL_COLUMNS = ["payment_method_id"]
 
 
 def train_lightgbm(
@@ -22,7 +31,7 @@ def train_lightgbm(
 ) -> lgb.LGBMClassifier:
     """Trains with early stopping on the validation fold. The caller is
     responsible for splitting train_df/val_df along non-overlapping
-    cutoffs (spec Sec 3) -- this function only fits.
+    temporal cutoffs -- this function only fits.
     """
     pos_rate = train_df[label_col].mean()
     scale_pos_weight = (1 - pos_rate) / pos_rate
@@ -35,14 +44,41 @@ def train_lightgbm(
         num_leaves=31,
         min_child_samples=50,
         random_state=42,
+        # Multi-threaded histogram building is not bit-reproducible run to
+        # run (floating-point summation order varies with thread
+        # scheduling) even with a fixed random_state -- deterministic=True
+        # plus a fixed row/col-wise strategy is LightGBM's documented way
+        # to get exact reproducibility (see LightGBM's "Reproducibility"
+        # docs).
+        deterministic=True,
+        force_row_wise=True,
     )
     model.fit(
         train_df[feature_columns], train_df[label_col],
         eval_set=[(val_df[feature_columns], val_df[label_col])],
         eval_metric="average_precision",
-        callbacks=[lgb.early_stopping(stopping_rounds=30, verbose=False)],
+        categorical_feature=[c for c in CATEGORICAL_COLUMNS if c in feature_columns],
+        callbacks=[lgb.early_stopping(stopping_rounds=30, first_metric_only=True, verbose=False)],
     )
     return model
+
+
+def train_logistic_baseline(
+    train_df: pd.DataFrame,
+    feature_columns: list[str] = FEATURE_COLUMNS,
+    label_col: str = "is_churn",
+) -> Pipeline:
+    """Plain logistic-regression baseline on the same features as
+    train_lightgbm, for comparison -- a churn model's PR-AUC only means
+    something relative to how far it beats this.
+    """
+    pipeline = Pipeline([
+        ("impute", SimpleImputer(strategy="median")),
+        ("scale", StandardScaler()),
+        ("logreg", LogisticRegression(max_iter=1000, class_weight="balanced")),
+    ])
+    pipeline.fit(train_df[feature_columns], train_df[label_col])
+    return pipeline
 
 
 def evaluate(
