@@ -29,6 +29,7 @@ from src.modeling import (
     calibrate_isotonic,
     evaluate,
     train_lightgbm,
+    train_logistic_baseline,
 )
 from src.sampling import stratified_sample
 from src.shap_utils import compute_shap_values
@@ -166,6 +167,11 @@ def main() -> None:
     model = train_lightgbm(train_df, val_df)
     metrics = evaluate(model, test_df)
     log(f"  test PR-AUC={metrics['pr_auc']:.4f} ROC-AUC={metrics['roc_auc']:.4f}")
+
+    log("training logistic-regression baseline for comparison")
+    baseline = train_logistic_baseline(train_df)
+    baseline_metrics = evaluate(baseline, test_df)
+    log(f"  baseline PR-AUC={baseline_metrics['pr_auc']:.4f} ROC-AUC={baseline_metrics['roc_auc']:.4f}")
 
     log("isotonic calibration")
     calibrated = calibrate_isotonic(model, val_df)

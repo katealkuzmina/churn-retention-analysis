@@ -78,9 +78,9 @@ Cutoffs are one month earlier than an initial draft used (which had the test fol
 
 | Fold | Cutoff | Candidates | Churn rate |
 |---|---|---|---|
-| Train | 2016-11-30 | TBD-after-Task-6-rerun | TBD |
-| Validation | 2016-12-31 | TBD-after-Task-6-rerun | TBD |
-| Test | 2017-01-31 | TBD-after-Task-6-rerun | TBD |
+| Train | 2016-11-30 | 839,356 | 7.674% |
+| Validation | 2016-12-31 | 820,637 | 4.082% |
+| Test | 2017-01-31 | 841,374 | 3.721% |
 
 (For reference: Kaggle's own `train.csv`, a similar Jan-2017-cutoff
 population defined slightly differently, reports 992,931 members at 6.39%
@@ -110,7 +110,7 @@ few months, then a long, slowly-decaying tail for members who stick around
 
 Kaplan-Meier survival curves (`lifelines`), segmented by auto-renew status
 and registration channel, show materially different survival profiles —
-confirmed with log-rank tests (auto-renew: p≈0; registration channel: p=6e-36).
+confirmed with log-rank tests (auto-renew: p≈0; registration channel: p=2.635e-19).
 See `data/processed/fig_survival_curves.png`.
 
 ## Hypothesis testing
@@ -128,10 +128,15 @@ LightGBM (`scale_pos_weight` set to the train-fold imbalance ratio, not
 resampling), early-stopped on the validation fold, evaluated once on the
 untouched test fold:
 
-- **PR-AUC: 0.339** (primary metric — the positive class is ~4% of the
+- **PR-AUC: 0.3886** (primary metric — the positive class is ~4% of the
   population, so PR-AUC is the honest number; ROC-AUC alone overstates
   performance at this base rate)
-- **ROC-AUC: 0.890** (reported as the more familiar secondary number)
+- **ROC-AUC: 0.8775** (reported as the more familiar secondary number)
+
+**Baseline comparison:** a plain logistic regression on the same features
+scores PR-AUC=0.2962 — the LightGBM model's lift over that baseline is
+0.0924 points, not just its absolute PR-AUC (ROC-AUC for the baseline:
+0.8511).
 
 See `data/processed/fig_pr_roc.png`.
 
@@ -140,14 +145,14 @@ See `data/processed/fig_pr_roc.png`.
 Raw LightGBM probabilities feed directly into the dollar formula below, so
 they need to be genuinely calibrated, not just rank-ordered. Isotonic
 regression (via `sklearn`'s `FrozenEstimator`, fit on the validation fold)
-cuts the test-fold **Brier score from 0.0359 to 0.0309**. Reliability
+cuts the test-fold **Brier score from 0.0984 to 0.0276**. Reliability
 diagram: `data/processed/fig_calibration.png`.
 
 ## SHAP interpretation
 
 `data/processed/fig_shap_summary.png`. Top features by mean |SHAP|:
-`is_auto_renew`, `payment_method_id`, `num_transactions_last_90d`,
-`active_days_last_30`, `tenure_days` — auto-renew status and recent
+`num_transactions_last_90d`, `is_auto_renew`, `payment_method_id`,
+`tenure_days`, `num_cancels_lifetime` — auto-renew status and recent
 transaction/engagement behavior dominate; demographics barely register.
 Matches the intuition that churn is a behavioral signal, not a
 who-you-are signal.
@@ -162,10 +167,10 @@ fold's calibrated probabilities (assuming ARPU=$4.99, average lifetime=21
 months, contact cost=$3, and a 15% campaign conversion rate as a
 planning assumption):
 
-- **Best contact volume: top 7%** of the scored base
-- **Expected profit at that volume: ~$13,800** (at the 15% assumed
+- **Best contact volume: top 6%** of the scored base
+- **Expected profit at that volume: ~$17,575** (at the 15% assumed
   conversion rate)
-- **Breakeven conversion rate at that volume: 9.1%** — below this,
+- **Breakeven conversion rate at that volume: 7.6%** — below this,
   contacting that many people loses money regardless of how good the churn
   model's ranking is. This is the number to hand a stakeholder, not AUC.
 
