@@ -185,18 +185,71 @@ who-you-are signal.
 
 `src/economics.py` turns a calibrated churn probability into a dollar
 decision: `ev_per_contact = p_churn * conversion_rate * (arpu *
-avg_lifetime_months) - contact_cost`, summed over whichever top-k% of the
-scored base gets contacted. Sweeping contact volume against the test
-fold's calibrated probabilities (assuming ARPU=$4.99, average lifetime=21
-months, contact cost=$3, and a 15% campaign conversion rate as a
-planning assumption):
+avg_lifetime_months * margin_rate) - contact_cost`, summed over whichever
+top-k% of the scored base gets contacted. `ltv`/`ev_per_contact`/
+`campaign_expected_profit`/`breakeven_conversion_rate` all take a
+`margin_rate` parameter (default `1.0`, i.e. raw ARPU/revenue, for
+backward compatibility) so the campaign's spend (`contact_cost`) can be
+weighed against the *margin* it actually keeps, not gross revenue.
+
+**A mentor review flagged two problems with the original headline
+number:** (1) it assumed a 21-month average lifetime, which is the
+base-rate across the whole member base, not the much shorter actual
+lifetime of the ~33%-per-cycle-churning target group the campaign
+contacts; and (2) it used raw revenue instead of margin, and was computed
+on the ~12%-sampled test fold (~100k rows) without being scaled up to the
+true test-fold population (~841k rows).
+
+Both are now fixed. `scale_to_full_population(sample_profit, sample_size,
+full_population_size)` rescales a profit figure computed on the sampled
+fold up to what contacting the same top-k% of the *full* un-sampled
+test-fold population (`full_test_population_size`, captured right after
+`population` is built and before `stratified_sample` runs) would yield.
+Sweeping contact volume against the test fold's calibrated probabilities
+(ARPU=$4.99, contact cost=$3, 15% assumed campaign conversion rate):
 
 - **Best contact volume: top 5%** of the scored base
-- **Expected profit at that volume: ~$17,683** (at the 15% assumed
-  conversion rate)
+- **Expected profit at that volume (21mo lifetime, 100% margin_rate,
+  sampled fold): ~$17,683 — at full-test-population scale: ~$147,662**
 - **Breakeven conversion rate at that volume: 6.9%** — below this,
   contacting that many people loses money regardless of how good the churn
-  model's ranking is. This is the number to hand a stakeholder, not AUC.
+  model's ranking is.
+
+### Scenario table (lifetime and margin sensitivity)
+
+Holding the same top-5% contact volume fixed, varying the lifetime
+assumption and margin_rate (real output from `scripts/build_pipeline.py`,
+`sample_profit` on the ~100k-row test fold, `full_population_profit`
+scaled via `scale_to_full_population` to the ~841k-row full test-fold
+population):
+
+| scenario | sample_profit | full_population_profit |
+|---|---:|---:|
+| 21mo revenue (original assumption) | $17,682.56 | $147,661.62 |
+| 12mo revenue (target-group-adjusted lifetime) | $3,626.89 | $30,287.05 |
+| 12mo margin at 40% margin_rate | -$7,617.64 | -$63,612.60 |
+| 6mo revenue | -$5,743.55 | -$47,962.65 |
+
+Shortening the assumed lifetime from 21 to 12 months (closer to what the
+~33%-per-cycle-churning target group actually experiences) cuts expected
+profit by roughly 80%; applying a realistic 40% margin_rate on top of
+that 12-month lifetime flips the campaign from profitable to a loss; and
+at a 6-month lifetime the campaign is unprofitable even at 100%
+margin_rate. **The headline dollar figure above is reported at
+full-test-population scale (via `scale_to_full_population`) and, where
+`margin_rate` is applied, on margin rather than raw ARPU — the original
+$13.8k/$2.3k figures from an earlier, buggy pipeline run no longer
+apply and should not be cited.**
+
+**Uplift caveat:** this EV model assumes the campaign's `conversion_rate`
+applies uniformly to everyone contacted. In practice, a retention offer's
+effect (uplift) varies by member — some would've stayed anyway, some
+can't be saved regardless of the offer. Properly targeting contact volume
+would use an uplift model (e.g. two-model or a causal-tree approach
+trained on historical campaign A/B data) to target *persuadable* members,
+not just *highest-churn-risk* ones. Not implemented here — flagged as the
+natural next step, since it changes who gets contacted, not just the
+breakeven math.
 
 See `data/processed/fig_campaign_economics.png`.
 
@@ -204,7 +257,7 @@ See `data/processed/fig_campaign_economics.png`.
 
 `dashboard/app.py` (Streamlit) — four pages: Overview, Survival &
 hypothesis tests, Model performance, and a live **Campaign economics**
-page where ARPU/lifetime/contact-cost/conversion-rate are sliders and the
+page where ARPU/lifetime/contact-cost/conversion-rate/margin-rate are sliders and the
 expected-profit and breakeven-conversion-rate numbers recompute instantly
 via the same `src/economics.py` functions used in the notebook (no
 duplicated logic between the two).

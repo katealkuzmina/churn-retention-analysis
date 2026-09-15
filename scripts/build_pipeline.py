@@ -15,7 +15,11 @@ import pandas as pd
 
 from src.candidates import scope_to_renewal_candidates
 from src.cohorts import build_cohort_retention
-from src.economics import breakeven_conversion_rate, campaign_expected_profit
+from src.economics import (
+    breakeven_conversion_rate,
+    campaign_expected_profit,
+    scale_to_full_population,
+)
 from src.feature_mart import build_feature_mart
 from src.hypothesis_tests import (
     chi_square_independence,
@@ -92,6 +96,12 @@ def main() -> None:
     del folds
     gc.collect()
     log(f"combined population: {len(population):,} rows")
+
+    # Captured here, BEFORE stratified_sample runs below, so downstream
+    # economics scaling (scale_to_full_population) reflects the true
+    # un-sampled test-fold candidate count, not the ~12%-sampled fold size.
+    full_test_population_size = (population["fold"] == "test").sum()
+    log(f"full (un-sampled) test-fold population: {full_test_population_size:,} rows")
 
     log("adding demographic + remaining spec Sec4 columns")
     extra = con.execute("""
@@ -216,6 +226,26 @@ def main() -> None:
         p_series, top_k_fraction=best_k, arpu=4.99, avg_lifetime_months=21, contact_cost=3.0,
     )
     log(f"  best top-k={best_k:.0%}, expected profit=${best_profit:,.0f}, breakeven conversion={breakeven:.1%}")
+
+    log("economics scenario table (lifetime/margin sensitivity, scaled to full test population)")
+    scenarios = []
+    for label, lifetime_months, margin_rate in [
+        ("21mo revenue (original assumption)", 21, 1.0),
+        ("12mo revenue (target-group-adjusted lifetime)", 12, 1.0),
+        ("12mo margin at 40% margin_rate", 12, 0.4),
+        ("6mo revenue", 6, 1.0),
+    ]:
+        sample_profit = campaign_expected_profit(
+            p_series, best_k, conversion_rate=0.15, arpu=4.99,
+            avg_lifetime_months=lifetime_months, contact_cost=3.0, margin_rate=margin_rate,
+        )
+        full_profit = scale_to_full_population(
+            sample_profit, sample_size=len(p_series), full_population_size=full_test_population_size,
+        )
+        scenarios.append({"scenario": label, "sample_profit": sample_profit, "full_population_profit": full_profit})
+
+    scenario_table = pd.DataFrame(scenarios)
+    log("\n" + scenario_table.to_string(index=False))
 
     log("writing scored feature mart")
     scored = test_df.copy()

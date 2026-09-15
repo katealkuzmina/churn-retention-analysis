@@ -59,13 +59,14 @@ elif page == "Campaign economics":
     contact_cost = st.slider("Contact cost ($)", 0.5, 20.0, 3.0)
     conversion_rate = st.slider("Assumed campaign conversion rate", 0.0, 1.0, 0.15)
     top_k = st.slider("Contact top K% of scored base", 1, 100, 12) / 100
+    margin_rate = st.slider("Margin rate (share of ARPU kept as margin)", 0.1, 1.0, 0.4)
 
     profit = campaign_expected_profit(
         mart["p_churn_calibrated"], top_k, conversion_rate,
-        arpu, avg_lifetime_months, contact_cost,
+        arpu, avg_lifetime_months, contact_cost, margin_rate=margin_rate,
     )
     breakeven = breakeven_conversion_rate(
-        mart["p_churn_calibrated"], top_k, arpu, avg_lifetime_months, contact_cost,
+        mart["p_churn_calibrated"], top_k, arpu, avg_lifetime_months, contact_cost, margin_rate=margin_rate,
     )
     st.metric("Expected campaign profit", f"${profit:,.0f}")
     st.metric("Breakeven conversion rate", f"{breakeven:.1%}")
