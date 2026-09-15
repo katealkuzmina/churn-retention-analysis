@@ -39,6 +39,14 @@ def train_lightgbm(
         num_leaves=31,
         min_child_samples=50,
         random_state=42,
+        # Multi-threaded histogram building is not bit-reproducible run to
+        # run (floating-point summation order varies with thread
+        # scheduling) even with a fixed random_state -- deterministic=True
+        # plus a fixed row/col-wise strategy is LightGBM's documented way
+        # to get exact reproducibility (see LightGBM's "Reproducibility"
+        # docs).
+        deterministic=True,
+        force_row_wise=True,
     )
     model.fit(
         train_df[feature_columns], train_df[label_col],

@@ -10,15 +10,15 @@ def _fixture_connection() -> duckdb.DuckDBPyConnection:
 
     con.execute("""
         CREATE TABLE transactions (
-            msno VARCHAR, payment_method_id INTEGER, plan_list_price DOUBLE,
-            actual_amount_paid DOUBLE, is_auto_renew INTEGER,
+            msno VARCHAR, payment_method_id INTEGER, payment_plan_days INTEGER,
+            plan_list_price DOUBLE, actual_amount_paid DOUBLE, is_auto_renew INTEGER,
             transaction_date DATE, membership_expire_date DATE, is_cancel INTEGER
         )
     """)
     con.execute("""
         INSERT INTO transactions VALUES
-        ('U1', 40, 149.0, 149.0, 1, '2016-11-01', '2016-11-30', 0),
-        ('U1', 40, 149.0, 100.0, 1, '2016-12-01', '2016-12-31', 0)
+        ('U1', 40, 30, 149.0, 149.0, 1, '2016-11-01', '2016-11-30', 0),
+        ('U1', 40, 30, 149.0, 100.0, 1, '2016-12-01', '2016-12-31', 0)
     """)
 
     con.execute("CREATE TABLE user_logs (msno VARCHAR, date DATE, total_secs DOUBLE)")

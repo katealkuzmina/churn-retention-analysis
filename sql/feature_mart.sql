@@ -4,9 +4,19 @@
 -- each bound to the same cutoff_date value by src/feature_mart.py.
 
 WITH last_transaction AS (
+    -- Tie-broken by every remaining column (not just transaction_date) so
+    -- the "most recent transaction" pick is fully deterministic even when
+    -- a member has multiple same-day transactions -- DuckDB's parallel
+    -- scan does not guarantee row order, so ROW_NUMBER() on
+    -- transaction_date alone silently picked a different row across runs.
     SELECT * FROM (
         SELECT t.*,
-            ROW_NUMBER() OVER (PARTITION BY msno ORDER BY transaction_date DESC) AS rn
+            ROW_NUMBER() OVER (
+                PARTITION BY msno
+                ORDER BY transaction_date DESC, membership_expire_date DESC,
+                    payment_method_id, payment_plan_days, plan_list_price,
+                    actual_amount_paid, is_auto_renew, is_cancel
+            ) AS rn
         FROM transactions t
         WHERE t.transaction_date < CAST(? AS DATE)
     )
@@ -61,4 +71,5 @@ SELECT
 FROM members m
 JOIN last_transaction lt ON lt.msno = m.msno
 LEFT JOIN tx_rolling tr ON tr.msno = m.msno
-LEFT JOIN logs_rolling lr ON lr.msno = m.msno;
+LEFT JOIN logs_rolling lr ON lr.msno = m.msno
+ORDER BY m.msno;
