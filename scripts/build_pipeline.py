@@ -59,7 +59,7 @@ def main() -> None:
     con = connect()
 
     log("loading transactions once (reused across cutoffs, labels, cohorts)")
-    tx_all = con.execute("SELECT msno, transaction_date, membership_expire_date FROM transactions").df()
+    tx_all = con.execute("SELECT msno, transaction_date, membership_expire_date, is_cancel FROM transactions").df()
     tx_all["transaction_date"] = pd.to_datetime(tx_all["transaction_date"])
     tx_all["membership_expire_date"] = pd.to_datetime(tx_all["membership_expire_date"])
     log(f"  transactions: {len(tx_all):,} rows")
