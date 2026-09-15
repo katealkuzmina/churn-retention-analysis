@@ -26,7 +26,7 @@ def train_lightgbm(
 ) -> lgb.LGBMClassifier:
     """Trains with early stopping on the validation fold. The caller is
     responsible for splitting train_df/val_df along non-overlapping
-    cutoffs (spec Sec 3) -- this function only fits.
+    temporal cutoffs -- this function only fits.
     """
     pos_rate = train_df[label_col].mean()
     scale_pos_weight = (1 - pos_rate) / pos_rate

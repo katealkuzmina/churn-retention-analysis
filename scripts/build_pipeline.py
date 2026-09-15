@@ -1,4 +1,4 @@
-"""Scratch driver for the end-to-end churn-retention pipeline (spec Sec 3-9a).
+"""Non-interactive driver for the end-to-end churn-retention pipeline.
 
 Validated here as a plain script first (faster iteration on real 30GB+
 data than re-running notebook cells), then folded into
@@ -103,7 +103,7 @@ def main() -> None:
     full_test_population_size = (population["fold"] == "test").sum()
     log(f"full (un-sampled) test-fold population: {full_test_population_size:,} rows")
 
-    log("adding demographic + remaining spec Sec4 columns")
+    log("adding demographic columns")
     extra = con.execute("""
         SELECT
             msno,

@@ -20,6 +20,10 @@ at what campaign conversion rate does contacting them stop being profitable.
 
 ## Data
 
+This repo's code is MIT-licensed (see `LICENSE`); the KKBox dataset
+itself is not — it stays under Kaggle's WSDM 2018 competition rules
+regardless of this repo's license.
+
 - `members_v3.csv` (6.77M rows) — demographics: city, age (`bd`, noisy —
   clipped to `[10, 80]` in EDA), gender (65% missing — not everyone filled
   it in), registration channel, registration date.
