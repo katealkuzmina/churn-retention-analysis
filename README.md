@@ -75,12 +75,13 @@ and the regression test in `tests/test_labels.py`.
 around a given cutoff if their subscription is actually coming up for
 renewal then. Restricting each cutoff's population to members whose
 subscription expiry falls in `[cutoff, cutoff + 28 days)` reproduces
-Kaggle's own `train.csv` candidate count closely -- within ~4%
-(this project's train-fold window: ~956k candidates vs. `train.csv`'s
-993k), with 95% label agreement on the overlapping members. Churn rates,
-however, vary by fold (train: ~7.7%, test: ~3.5%) and, on the fold
-actually comparable to `train.csv`'s Jan-2017 cutoff, run well below
-Kaggle's aggregate 6.4% -- see Limitations. Without this filter the
+Kaggle's own `train.csv` candidate count in the same ballpark -- 844,114
+candidates on this project's test fold (the one actually comparable to
+`train.csv`'s Jan-2017 cutoff, ~15% fewer than `train.csv`'s 992,931),
+with 98% label agreement on the overlapping members. Churn rates,
+however, vary by fold (train: ~7.7%, test: ~3.5%) and, on that same
+comparable fold, run well below Kaggle's aggregate 6.4% -- see
+Limitations. Without this filter the
 population includes every member with any transaction history — most of
 them mid-subscription with nothing to decide yet — which inflates apparent
 churn to ~50%.

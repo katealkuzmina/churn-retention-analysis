@@ -88,10 +88,11 @@ def main() -> None:
         # period. Without this, the population includes everyone with any
         # transaction history (many mid-subscription, nothing to decide
         # yet), which inflates churn to ~50%.
-        # Candidate counts land within ~4% of KKBox's own train.csv
-        # population (~956k here vs. train.csv's 993k, 95% label agreement
-        # on the overlap); churn rates vary by fold (train: ~7.7%, test:
-        # ~3.5%) and run below train.csv's aggregate 6.4% -- see README
+        # Candidate counts land in the same ballpark as KKBox's own
+        # train.csv population (844,114 on the comparable test fold vs.
+        # train.csv's 992,931, ~15% fewer, 98% label agreement on the
+        # overlap); churn rates vary by fold (train: ~7.7%, test: ~3.5%)
+        # and run below train.csv's aggregate 6.4% -- see README
         # Limitations.
         labels = scope_to_renewal_candidates(labels, pd.Timestamp(cutoff), window_days=28)
         merged = mart.merge(labels[["msno", "is_churn", "expire_at_cutoff"]], on="msno", how="inner")
